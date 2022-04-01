@@ -4336,7 +4336,7 @@ impl Connection {
         }
     }
 
-    fn dgram_enabled(&self) -> bool {
+    pub fn dgram_enabled(&self) -> bool {
         self.local_transport_params
             .max_datagram_frame_size
             .is_some()
@@ -11174,3 +11174,4 @@ mod ranges;
 mod recovery;
 mod stream;
 mod tls;
+pub mod webtransport;
