@@ -125,7 +125,7 @@ pub enum ServerEvent {
     StreamData(u64),
 
     /// WebTransport stream was closed.
-    StreamFinished,
+    StreamFinished(u64),
 
     /// DATAGRAM was received
     Datagram,
@@ -475,7 +475,7 @@ impl ServerSession {
 
             Ok((stream_id, h3::Event::Finished)) => {
                 if self.streams.contains_key(&stream_id) {
-                    Ok(ServerEvent::StreamFinished)
+                    Ok(ServerEvent::StreamFinished(stream_id))
                 } else {
                     match self.state {
                         ServerState::Requested(sid) => if sid == stream_id {
