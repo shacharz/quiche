@@ -1168,7 +1168,7 @@ impl Connection {
     /// method.
     ///
     /// [`poll()`]: struct.Connection.html#method.poll
-    pub fn webtransport_enabled_by_peer(&self, conn: &super::Connection) -> bool {
+    pub fn webtransport_enabled_by_peer(&self) -> bool {
         self.peer_settings.enable_webtransport == Some(1)
     }
 

@@ -1,27 +1,86 @@
+//! WebTransport over HTTP/3 session management implementation.
+//!
+//! This module provides both server-side and client-side
+//! WebTransport session management API.
+//!
+//! ## Connection setup
+//!
+//! Same as quiche::h3 module, WebTransport session
+//! requires a QUIC transport-layer connection, see
+//! [Connection setup] for a full description of the setup process.
+//!
+//! To use HTTP/3, the QUIC connection must be configured with a suitable
+//! Application Layer Protocol Negotiation (ALPN) Protocol ID:
+//!
+//! ```
+//! let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION)?;
+//! config.set_application_protos(quiche::h3::APPLICATION_PROTOCOL)?;
+//! # Ok::<(), quiche::Error>(())
+//! ```
+//!
+//! The QUIC handshake is driven by [sending] and [receiving] QUIC packets.
+//!
+//! Once the handshake has completed, the first step in establishing an HTTP/3
+//! connection and WebTransport session is creating its configuration object:
+//!
+//! WebTransport over HTTP/3 client and server connections are both created using the
+//! [`with_transport()`] function, the role is inferred from the type of QUIC
+//! connection:
+//!
+//! ```no_run
+//! # let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
+//! # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
+//! # let from = "127.0.0.1:1234".parse().unwrap();
+//! # let mut conn = quiche::accept(&scid, None, from, &mut config).unwrap();
+//! let h3_conn = quiche::webtransport::ServerSession::with_transport(&mut conn)?;
+//! # Ok::<(), quiche::webtransport::Error>(())
+//! ```
+//!
 use crate::h3::{self, Header, NameValue};
 use crate::Connection;
+use crate::stream::is_bidi;
 use std::collections::HashMap;
 use std::str;
 
-fn is_bidi(stream_id: u64) -> bool {
-    (stream_id & 0x2) == 0
+/// An error on CONNECT request to establish WebTransport session.
+#[derive(Clone, Debug, PartialEq)]
+enum ConnectRequestError {
+    /// A parameter not found.
+    MissingParam(&'static str),
+    /// A parameter' type or format is wrong.
+    InvalidParam(&'static str, Vec<u8>),
+    /// A parameter doesn't match to expected one.
+    ParamMismatch(&'static str, &'static str, Vec<u8>),
 }
 
+/// An WebTransport error.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Error {
-    MissingParam(&'static str),
-    InvalidParam(&'static str, Vec<u8>),
-    ParamMismatch(&'static str, &'static str, Vec<u8>),
-    InvalidState,
-    InvalidArg(&'static str),
-    InvalidConfig(&'static str),
-    SessionNotFound,
-    SessionNotConnected,
-    StreamNotFound,
-    InvalidStream,
-    InvalidClientState,
+    /// There is no error or no work todo
     Done,
+
+    /// Event based on data sent by the client, but not related to WebTransport
+    Ignored,
+
+    /// Invalid state of session.
+    InvalidState,
+
+    /// An argument of method is wrong.
+    InvalidArg(&'static str),
+
+    /// Invalid QUIC tarnsport configuration found.
+    InvalidConfig(&'static str),
+
+    /// The specified stream doesn't exist.
+    StreamNotFound,
+
+    /// The direction or initiater of the specified stream does not match.
+    InvalidStream,
+
+    /// Error originated from the transport layer.
     TransportError(crate::Error),
+
+    /// Error originated from the HTTP3 layer.
     HTTPError(h3::Error),
 }
 
@@ -51,20 +110,36 @@ impl std::convert::From<crate::Error> for Error {
     fn from(err: crate::Error) -> Self {
         match err {
             crate::Error::Done => Error::Done,
-
             _ => Error::TransportError(err),
         }
     }
 }
 
+/// An WebTransport server session event.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ServerEvent {
+    /// HTTP headers requesting WebTransport start were received.
     ConnectRequest(ConnectRequest),
+
+    /// WebTransport stream payload was received
     StreamData(u64),
+
+    /// WebTransport stream was closed.
+    StreamFinished,
+
+    /// DATAGRAM was received
     Datagram,
-    Finished,
-    Reset(u64),
-    GoAway,
+
+    /// WebTransport session-control-stream was closed.
+    SessionFinished,
+
+    /// WebTransport session-control-stream was reset.
+    SessionReset(u64),
+
+    /// GOAWAY was received on WebTransport session-control-stream.
+    SessionGoAway,
+
+    /// Events related to HTTP other than WebTransport
     HTTPEvent(h3::Event),
 }
 
@@ -82,8 +157,15 @@ pub enum ClientEvent {
 }
 */
 
+/// A specialized [`Result`] type for quiche WebTransport operations.
+///
+/// This type is used throughout quiche's WebTransport public API for any operation
+/// that can produce an error.
+///
+/// [`Result`]: https://doc.rust-lang.org/std/result/enum.Result.html
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// The main header values that were included in the HTTP request to initiate WebTransport
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConnectRequest {
     authority: String,
@@ -92,6 +174,7 @@ pub struct ConnectRequest {
 }
 
 impl ConnectRequest {
+    /// Create a new connect-request
     pub fn new(authority: String, path: String, origin: String) -> Self {
         Self {
             authority,
@@ -100,26 +183,31 @@ impl ConnectRequest {
         }
     }
 
+    /// accessor to the ':authority' header value
     pub fn authority(&self) -> &str {
         &self.authority
     }
 
+    /// accessor to the ':path' header value
     pub fn path(&self) -> &str {
         &self.path
     }
 
+    /// accessor to the 'origin' header value
     pub fn origin(&self) -> &str {
         &self.origin
     }
 }
 
-pub struct StreamInfo {
+/// Information about WebTransport stream.
+struct StreamInfo {
     stream_id: u64,
     local: bool,
     initialized: bool,
 }
 
 impl StreamInfo {
+    /// Create a new stream info
     pub fn new(stream_id: u64, local: bool) -> Self {
         Self {
             stream_id,
@@ -128,69 +216,30 @@ impl StreamInfo {
         }
     }
 
+    /// Returns true if the stream is bidirectional.
     pub fn is_bidi(&self) -> bool {
         is_bidi(self.stream_id)
     }
 
+    /*
+    /// Returns true if it is already marked as initialized.
     pub fn is_initialized(&self) -> bool {
         self.initialized
     }
+    */
 
+    /// Returns true if the stream was created locally.
     pub fn is_local(&self) -> bool {
         self.local
     }
 
+    /// Mark as initialized. This method should be called after send required data before payload.
     pub fn mark_initialized(&mut self) {
         self.initialized = true;
     }
 }
 
-pub struct Session {
-    session_id: u64,
-    streams: HashMap<u64, StreamInfo>,
-    connected: bool,
-}
-
-impl Session {
-    pub fn new(session_id: u64) -> Self {
-        Self {
-            session_id,
-            streams: HashMap::new(),
-            connected: false,
-        }
-    }
-
-    pub fn is_connected(&self) -> bool {
-        self.connected
-    }
-
-    pub fn mark_connected(&mut self) {
-        self.connected = true;
-    }
-
-    pub fn session_id(&self) -> u64 {
-        self.session_id
-    }
-
-    pub fn get_stream(&mut self, stream_id: u64) -> Option<&mut StreamInfo> {
-        self.streams.get_mut(&stream_id)
-    }
-
-    pub fn register_stream(&mut self, stream_id: u64, stream: StreamInfo) -> bool {
-        if self.streams.contains_key(&stream_id) {
-            false
-        } else {
-            self.streams.insert(stream_id, stream);
-            true
-        }
-    }
-
-    pub fn unregister_stream(&mut self, stream_id: u64) {
-        self.streams.remove(&stream_id);
-    }
-}
-
-fn find_request(list: &[h3::Header]) -> Result<ConnectRequest> {
+fn find_request(list: &[h3::Header]) -> std::result::Result<ConnectRequest, ConnectRequestError> {
     match is_webtransport_request(list) {
         Ok(()) => {
             let mut headers = list.into_iter();
@@ -209,44 +258,46 @@ fn find_request(list: &[h3::Header]) -> Result<ConnectRequest> {
 fn find_string_param(
     headers: &mut std::slice::Iter<h3::Header>,
     param: &'static str,
-) -> Result<String> {
+) -> std::result::Result<String, ConnectRequestError> {
     if let Some(header) = headers.find(|h| h.name() == param.as_bytes()) {
         if let Ok(param_str) = String::from_utf8(header.value().to_vec()) {
             Ok(param_str)
         } else {
-            Err(Error::InvalidParam(param, header.value().to_vec()))
+            Err(ConnectRequestError::InvalidParam(param, header.value().to_vec()))
         }
     } else {
-        Err(Error::MissingParam(param))
+        Err(ConnectRequestError::MissingParam(param))
     }
 }
 
+/*
 fn find_integer_param(
     headers: &mut std::vec::IntoIter<h3::Header>,
     param: &'static str,
-) -> Result<i32> {
+) -> std::result::Result<i32, ConnectRequestError> {
     if let Some(header) = headers.find(|h| h.name() == param.as_bytes()) {
         if let Ok(param_str) = String::from_utf8(header.value().to_vec()) {
             let param_int = param_str
                 .parse::<i32>()
-                .map_err(|_| Error::InvalidParam(param, header.value().to_vec()))?;
+                .map_err(|_| ConnectRequestError::InvalidParam(param, header.value().to_vec()))?;
             Ok(param_int)
         } else {
-            Err(Error::InvalidParam(param, header.value().to_vec()))
+            Err(ConnectRequestError::InvalidParam(param, header.value().to_vec()))
         }
     } else {
-        Err(Error::MissingParam(param))
+        Err(ConnectRequestError::MissingParam(param))
     }
 }
+*/
 
 fn validate_param(
     headers: &mut std::slice::Iter<h3::Header>,
     param: &'static str,
     expected: &'static str,
-) -> Result<()> {
+) -> std::result::Result<(), ConnectRequestError> {
     if let Some(method) = headers.find(|h| h.name() == param.as_bytes()) {
         if method.value() != expected.as_bytes() {
-            Err(Error::ParamMismatch(
+            Err(ConnectRequestError::ParamMismatch(
                 param,
                 expected,
                 method.value().to_vec(),
@@ -255,33 +306,59 @@ fn validate_param(
             Ok(())
         }
     } else {
-        Err(Error::MissingParam(param))
+        Err(ConnectRequestError::MissingParam(param))
     }
 }
 
-fn is_webtransport_request(list: &[h3::Header]) -> Result<()> {
+fn is_webtransport_request(list: &[h3::Header]) -> std::result::Result<(), ConnectRequestError> {
     let mut headers = list.into_iter();
     validate_param(&mut headers, ":method", "CONNECT")?;
     validate_param(&mut headers, ":protocol", "webtransport")?;
     Ok(())
 }
 
-pub struct WebTransportServer {
-    server_name: String,
-    h3_conn: h3::Connection,
-    sessions: HashMap<u64, Session>,
+#[derive(Clone, Debug, PartialEq)]
+enum ServerState {
+    Init,
+    Requested(u64),
+    Connected(u64),
+    Finished,
 }
 
-impl WebTransportServer {
-    fn new(server_name: String, h3_conn: h3::Connection) -> Self {
+/// Represents an individual WebTransport session on the server side
+pub struct ServerSession {
+    h3_conn: h3::Connection,
+    streams: HashMap<u64, StreamInfo>,
+    state: ServerState,
+}
+
+impl ServerSession {
+
+    fn new(h3_conn: h3::Connection) -> Self {
         Self {
-            server_name,
             h3_conn,
-            sessions: HashMap::new(),
+            state: ServerState::Init,
+            streams: HashMap::new(),
         }
     }
 
-    pub fn with_transport(conn: &mut Connection, server_name: String) -> Result<Self> {
+    /// Returns true if this session has accepted the CONNECT request.
+    pub fn is_connected(&self) -> bool {
+        match self.state {
+            ServerState::Connected(_) => true,
+            _ => false,
+        }
+    }
+
+    /// Create a new WebTransport session using the provided QUIC connection.
+    ///
+    /// This includes the HTTP/3 handshake.
+    ///
+    /// On success the new session is returned.
+    ///
+    /// The [`StreamLimit`] error is returned when the HTTP/3 control stream
+    /// cannot be created.
+    pub fn with_transport(conn: &mut Connection) -> Result<Self> {
         if !conn.dgram_enabled() {
             return Err(Error::InvalidConfig("dgram_enabled"));
         }
@@ -294,9 +371,20 @@ impl WebTransportServer {
             Err(e) => return Err(e.into()),
         };
 
-        Ok(Self::new(server_name, h3_conn))
+        Ok(Self::new(h3_conn))
     }
 
+    /// Reads stream payload data into the provided buffer.
+    ///
+    /// Applications should call this method whenever the [`poll()`] method
+    /// returns a [`StreamData`] event.
+    ///
+    /// On success the amount of bytes read is returned, or [`Done`] if there
+    /// is no data to read.
+    ///
+    /// [`poll()`]: struct.ServerSession.html#method.poll
+    /// [`StreamData`]: enum.ServerEvent.html#variant.StreamData
+    /// [`Done`]: enum.Error.html#variant.Done
     pub fn recv_stream_data(
         &mut self,
         conn: &mut Connection,
@@ -308,81 +396,144 @@ impl WebTransportServer {
             .map_err(|e| e.into())
     }
 
+    /// Reads a DATAGRAM into the provided buffer.
+    ///
+    /// Applications should call this method whenever the [`poll()`] method
+    /// returns a [`Datagram`] event.
+    ///
+    /// On success the DATAGRAM data is returned, with offset wichi represents
+    /// length of the session ID and total length of data.
+    ///
+    /// [`Done`] is returned if there is no data to read.
+    ///
+    /// [`BufferTooShort`] is returned if the provided buffer is too small for
+    /// the data.
+    ///
+    /// [`poll()`]: struct.ServerSession.html#method.poll
+    /// [`Datagram`]: enum.ServerEvent.html#variant.Datagram
+    /// [`Done`]: enum.Error.html#variant.Done
+    /// [`BufferTooShort`]: ../h3/enum.Error.html#variant.BufferTooShort
     pub fn recv_dgram(
         &mut self,
         conn: &mut Connection,
         buf: &mut [u8],
-    ) -> Result<(usize, u64, usize)> {
-        self.h3_conn.recv_dgram(conn, buf).map_err(|e| e.into())
+    ) -> Result<(usize, usize)> {
+        match self.h3_conn.recv_dgram(conn, buf) {
+            Ok((len, session_id, session_id_len)) => {
+                match self.state {
+                    ServerState::Connected(sid) => if sid == session_id {
+                        Ok((session_id_len, len))
+                    } else {
+                        Err(Error::Ignored)
+                    },
+                    _ => Err(Error::InvalidState)
+                }
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
-    pub fn poll(&mut self, conn: &mut Connection) -> Result<(u64, ServerEvent)> {
+    /// Processes WebTransport data received from the peer.
+    ///
+    /// On success it returns an [`Event`] and an ID, or [`Done`] when there are
+    /// no events to report.
+    ///
+    /// Note that all events are edge-triggered, meaning that once reported they
+    /// will not be reported again by calling this method again, until the event
+    /// is re-armed.
+    pub fn poll(&mut self, conn: &mut Connection) -> Result<ServerEvent> {
         match self.h3_conn.poll(conn) {
-            Ok((stream_id, h3::Event::Headers { list, has_body })) => {
-                if self.sessions.contains_key(&stream_id) {
-                    Err(Error::HTTPError(h3::Error::FrameUnexpected))
-                } else {
-                    match find_request(&list) {
-                        Ok(wt_req) => Ok((stream_id, ServerEvent::ConnectRequest(wt_req))),
-                        Err(e) => {
-                            info!("This is not a WebTransport connect request: {}", e);
-                            Ok((
-                                stream_id,
-                                ServerEvent::HTTPEvent(h3::Event::Headers { list, has_body }),
-                            ))
+            Ok((stream_id, h3::Event::Headers { list, has_body:_ })) => {
+                match find_request(&list) {
+                    Ok(wt_req) => {
+                        if self.state == ServerState::Init {
+                            self.state = ServerState::Requested(stream_id);
+                            Ok(ServerEvent::ConnectRequest(wt_req))
+                        } else {
+                            Err(Error::Ignored)
                         }
                     }
+                    Err(_e) => Err(Error::Ignored),
                 }
             }
 
             Ok((stream_id, h3::Event::WebTransportStreamData(session_id))) => {
-                match self.sessions.get_mut(&session_id) {
-                    Some(session) => {
-                        if let None = session.get_stream(stream_id) {
-                            session.register_stream(stream_id, StreamInfo::new(stream_id, false));
+                match self.state {
+                    ServerState::Connected(sid) => if sid == session_id {
+                        if !self.streams.contains_key(&stream_id) {
+                            self.streams.insert(stream_id, StreamInfo::new(stream_id, false));
                         }
-                        Ok((stream_id, ServerEvent::StreamData(session_id)))
-                    }
-
-                    None => Err(Error::InvalidState),
+                        Ok(ServerEvent::StreamData(stream_id))
+                    } else {
+                        Err(Error::Ignored)
+                    },
+                    _ => Err(Error::Ignored)
                 }
             }
 
-            Ok((stream_id, h3::Event::Data)) => {
-                if self.sessions.contains_key(&stream_id) {
-                    Err(Error::HTTPError(h3::Error::FrameUnexpected))
+            Ok((_stream_id, h3::Event::Data)) => Err(Error::Ignored),
+
+            Ok((stream_id, h3::Event::Finished)) => {
+                if self.streams.contains_key(&stream_id) {
+                    Ok(ServerEvent::StreamFinished)
                 } else {
-                    Ok((stream_id, ServerEvent::HTTPEvent(h3::Event::Data)))
+                    match self.state {
+                        ServerState::Requested(sid) => if sid == stream_id {
+                            Ok(ServerEvent::SessionFinished)
+                        } else {
+                            Err(Error::Ignored)
+                        },
+                        ServerState::Connected(sid) => if sid == stream_id {
+                            Ok(ServerEvent::SessionFinished)
+                        } else {
+                            Err(Error::Ignored)
+                        },
+                        _ => Err(Error::Ignored)
+                    }
                 }
-            }
-
-            Ok((stream_id, h3::Event::Finished)) => match self.sessions.get_mut(&stream_id) {
-                Some(session) => {
-                    session.unregister_stream(stream_id);
-                    Ok((stream_id, ServerEvent::Finished))
-                }
-                None => Ok((stream_id, ServerEvent::HTTPEvent(h3::Event::Finished))),
             },
 
-            Ok((stream_id, h3::Event::Reset(e))) => match self.sessions.get_mut(&stream_id) {
-                Some(session) => {
-                    session.unregister_stream(stream_id);
-                    Ok((stream_id, ServerEvent::Reset(e)))
+            Ok((stream_id, h3::Event::Reset(e))) => {
+                match self.state {
+                    ServerState::Requested(sid) => if sid == stream_id {
+                        Ok(ServerEvent::SessionReset(e))
+                    } else {
+                        Err(Error::Ignored)
+                    },
+                    ServerState::Connected(sid) => if sid == stream_id {
+                        Ok(ServerEvent::SessionReset(e))
+                    } else {
+                        Err(Error::Ignored)
+                    },
+                    _ => Err(Error::Ignored)
                 }
-                None => Ok((stream_id, ServerEvent::HTTPEvent(h3::Event::Reset(e)))),
             },
 
             Ok((session_id, h3::Event::Datagram)) => {
-                if self.sessions.contains_key(&session_id) {
-                    Ok((session_id, ServerEvent::Datagram))
-                } else {
-                    Ok((session_id, ServerEvent::HTTPEvent(h3::Event::Datagram)))
+                match self.state {
+                    ServerState::Connected(sid) => if sid == session_id {
+                        Ok(ServerEvent::Datagram)
+                    } else {
+                        Err(Error::Ignored)
+                    },
+                    _ => Err(Error::Ignored)
                 }
             }
 
-            Ok((stream_id, h3::Event::GoAway)) => match self.sessions.get_mut(&stream_id) {
-                Some(_session) => Ok((stream_id, ServerEvent::GoAway)),
-                None => Ok((stream_id, ServerEvent::HTTPEvent(h3::Event::GoAway))),
+            Ok((stream_id, h3::Event::GoAway)) => {
+                match self.state {
+                    ServerState::Requested(sid) => if sid == stream_id {
+                        Ok(ServerEvent::SessionGoAway)
+                    } else {
+                        Err(Error::Ignored)
+                    },
+                    ServerState::Connected(sid) => if sid == stream_id {
+                        Ok(ServerEvent::SessionGoAway)
+                    } else {
+                        Err(Error::Ignored)
+                    },
+                    _ => Err(Error::Ignored)
+                }
             },
 
             Err(h3::Error::Done) => Err(Error::Done),
@@ -391,84 +542,69 @@ impl WebTransportServer {
         }
     }
 
+    /// accept connect request
     pub fn accept_connect_request(
         &mut self,
         conn: &mut Connection,
-        stream_id: u64,
         extra_headers: Option<&[Header]>,
     ) -> Result<()> {
-        if self.sessions.contains_key(&stream_id) {
-            return Err(Error::InvalidState);
+        match self.state {
+            ServerState::Requested(session_id) => {
+                let mut list = vec![
+                    Header::new(b":status", b"200"),
+                    Header::new(b"sec-webtransport-http3-draft", b"draft02"),
+                ];
+                if let Some(extra_headers) = extra_headers {
+                    list.append(&mut extra_headers.to_vec());
+                }
+                let _ = self.h3_conn.send_response(conn, session_id, &list, false)?;
+                self.state = ServerState::Connected(session_id);
+                Ok(())
+            },
+            _ => Err(Error::InvalidState),
         }
-
-        let server_name = self.server_name.clone().into_bytes();
-
-        let mut list = vec![
-            Header::new(b":status", b"200"),
-            Header::new(b"server", &server_name),
-            Header::new(b"sec-webtransport-http3-draft", b"draft02"),
-        ];
-
-        if let Some(extra_headers) = extra_headers {
-            list.append(&mut extra_headers.to_vec());
-        }
-
-        let _ = self.h3_conn.send_response(conn, stream_id, &list, false)?;
-
-        let mut session = Session::new(stream_id);
-        session.mark_connected();
-        self.sessions.insert(stream_id, session);
-
-        Ok(())
     }
 
+    /// reject connect request
     pub fn reject_connect_request(
         &mut self,
         conn: &mut Connection,
-        stream_id: u64,
         code: u32,
         extra_headers: Option<&[Header]>,
     ) -> Result<()> {
-        if self.sessions.contains_key(&stream_id) {
-            return Err(Error::InvalidState);
+        match self.state {
+            ServerState::Requested(session_id) => {
+                if code < 400 {
+                    return Err(Error::InvalidArg("code"));
+                }
+                let code = format!("{}", code).into_bytes();
+                let mut list = vec![
+                    Header::new(b":status", &code),
+                    Header::new(b"sec-webtransport-http3-draft", b"draft02"),
+                ];
+                if let Some(extra_headers) = extra_headers {
+                    list.append(&mut extra_headers.to_vec());
+                }
+                if let Err(e) = self.h3_conn.send_response(conn, session_id, &list, true) {
+                    warn!("Failed to send WebTransport reject response: {}", e);
+                }
+                self.state = ServerState::Finished;
+                // 0x10B = REQUEST_REJECTED
+                conn.close(true, 0x10B, b"")?;
+                Ok(())
+            },
+            _ => Err(Error::InvalidState),
         }
-
-        if code < 400 {
-            return Err(Error::InvalidArg("code"));
-        }
-
-        let code = format!("{}", code).into_bytes();
-        let server_name = self.server_name.clone().into_bytes();
-
-        let mut list = vec![
-            Header::new(b":status", &code),
-            Header::new(b"server", &server_name),
-            Header::new(b"sec-webtransport-http3-draft", b"draft02"),
-        ];
-
-        if let Some(extra_headers) = extra_headers {
-            list.append(&mut extra_headers.to_vec());
-        }
-
-        if let Err(e) = self.h3_conn.send_response(conn, stream_id, &list, true) {
-            warn!("Failed to send WebTransport reject response: {}", e);
-        }
-
-        // 0x10B = REQUEST_REJECTED
-        conn.close(true, 0x10B, b"")?;
-
-        Ok(())
     }
 
     /// open new WebTransport stream
     pub fn open_stream(
         &mut self,
         conn: &mut Connection,
-        session_id: u64,
         is_bidi: bool,
     ) -> Result<u64> {
-        match self.sessions.get_mut(&session_id) {
-            Some(session) => {
+        match self.state {
+            ServerState::Connected(session_id) => {
                 match self
                     .h3_conn
                     .open_webtransport_stream(conn, session_id, is_bidi)
@@ -476,14 +612,14 @@ impl WebTransportServer {
                     Ok(stream_id) => {
                         let mut stream = StreamInfo::new(stream_id, true);
                         stream.mark_initialized();
-                        session.register_stream(stream_id, stream);
+                        self.streams.insert(stream_id, stream);
                         Ok(stream_id)
                     }
 
-                    Err(e) => Err(Error::HTTPError(e)),
+                    Err(e) => Err(e.into()),
                 }
             }
-            None => Err(Error::SessionNotFound),
+            _ => Err(Error::InvalidState),
         }
     }
 
@@ -491,23 +627,24 @@ impl WebTransportServer {
     pub fn send_stream_data(
         &mut self,
         conn: &mut Connection,
-        session_id: u64,
         stream_id: u64,
         data: &[u8],
     ) -> Result<usize> {
-        match self.sessions.get_mut(&session_id) {
-            Some(session) => match session.get_stream(stream_id) {
-                Some(stream) => {
-                    if !stream.is_bidi() && !stream.is_local() {
-                        Err(Error::InvalidStream)
-                    } else {
-                        let written = conn.stream_send(stream_id, &data, false)?;
-                        Ok(written)
+        match self.state {
+            ServerState::Connected(_session_id) => {
+                match self.streams.get(&stream_id) {
+                    Some(stream) => {
+                        if !stream.is_bidi() && !stream.is_local() {
+                            Err(Error::InvalidStream)
+                        } else {
+                            let written = conn.stream_send(stream_id, &data, false)?;
+                            Ok(written)
+                        }
                     }
+                    None => Err(Error::StreamNotFound),
                 }
-                None => Err(Error::StreamNotFound),
             },
-            None => Err(Error::SessionNotFound),
+            _ => Err(Error::InvalidState),
         }
     }
 
@@ -515,14 +652,14 @@ impl WebTransportServer {
     pub fn send_dgram(
         &mut self,
         conn: &mut Connection,
-        session_id: u64,
         data: &[u8],
     ) -> Result<()> {
-        if self.sessions.contains_key(&session_id) {
-            self.h3_conn.send_dgram(conn, session_id, data)?;
-            Ok(())
-        } else {
-            Err(Error::SessionNotFound)
+        match self.state {
+            ServerState::Connected(session_id) => {
+                self.h3_conn.send_dgram(conn, session_id, data)?;
+                Ok(())
+            },
+            _ => Err(Error::InvalidState)
         }
     }
 }
@@ -535,13 +672,13 @@ enum ClientState {
     Connected,
 }
 
-pub struct WebTransportClient {
+pub struct ClientSession {
     h3_conn: h3::Connection,
     session: Option<Session>,
     state: ClientState,
 }
 
-impl WebTransportClient {
+impl ClientSession {
 
     fn new(h3_conn: h3::Connection) -> Self {
         Self {
@@ -841,6 +978,5 @@ impl WebTransportClient {
         Ok(written)
     }
 }
-
 
 */
