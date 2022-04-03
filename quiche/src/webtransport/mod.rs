@@ -42,6 +42,10 @@ use crate::stream::is_bidi;
 use std::collections::HashMap;
 use std::str;
 
+const HTTP_STATUS_BAD_REQUEST: u32 = 400;
+const HTTP_STATUS_TOO_MANY_REQUESTS: u32 = 429;
+const QUIC_CLOSE_REASON_REQUEST_REJECTED: u64 = 0x10B;
+
 /// An error on CONNECT request to establish WebTransport session.
 #[derive(Clone, Debug, PartialEq)]
 enum ConnectRequestError {
@@ -424,6 +428,7 @@ impl ServerSession {
                     ServerState::Connected(sid) => if sid == session_id {
                         Ok((session_id_len, len))
                     } else {
+                        info!("The session_id included in Datagram frame doesn't match to current WebTransport session.");
                         Err(Error::Ignored)
                     },
                     _ => Err(Error::InvalidState)
@@ -450,10 +455,16 @@ impl ServerSession {
                             self.state = ServerState::Requested(stream_id);
                             Ok(ServerEvent::ConnectRequest(wt_req))
                         } else {
-                            Err(Error::Ignored)
+                            info!("A New WebTransport request is received while current state is not idle: {:?}", self.state);
+                            let _ = self.reject_internal(conn, stream_id, HTTP_STATUS_TOO_MANY_REQUESTS, None);
+                            Err(Error::Done)
                         }
                     }
-                    Err(_e) => Err(Error::Ignored),
+                    Err(e) => {
+                        info!("This is a bad request to connect WebTransport: {:?}", e);
+                        let _ = self.reject_internal(conn, stream_id, HTTP_STATUS_BAD_REQUEST, None);
+                        Err(Error::Done)
+                    }
                 }
             }
 
@@ -465,6 +476,7 @@ impl ServerSession {
                         }
                         Ok(ServerEvent::StreamData(stream_id))
                     } else {
+                        info!("A WebTransport stream data received, but session_id does't match: {}", session_id);
                         Err(Error::Ignored)
                     },
                     _ => Err(Error::Ignored)
@@ -481,11 +493,13 @@ impl ServerSession {
                         ServerState::Requested(sid) => if sid == stream_id {
                             Ok(ServerEvent::SessionFinished)
                         } else {
+                            info!("A stream 'finished' event received, but stream_id is unknown: {}", stream_id);
                             Err(Error::Ignored)
                         },
                         ServerState::Connected(sid) => if sid == stream_id {
                             Ok(ServerEvent::SessionFinished)
                         } else {
+                            info!("A stream 'finished' event received, but stream_id is unknown: {}", stream_id);
                             Err(Error::Ignored)
                         },
                         _ => Err(Error::Ignored)
@@ -498,11 +512,13 @@ impl ServerSession {
                     ServerState::Requested(sid) => if sid == stream_id {
                         Ok(ServerEvent::SessionReset(e))
                     } else {
+                        info!("A stream 'reset' event received, but stream_id is unknown: {}", stream_id);
                         Err(Error::Ignored)
                     },
                     ServerState::Connected(sid) => if sid == stream_id {
                         Ok(ServerEvent::SessionReset(e))
                     } else {
+                        info!("A stream 'reset' event received, but stream_id is unknown: {}", stream_id);
                         Err(Error::Ignored)
                     },
                     _ => Err(Error::Ignored)
@@ -514,6 +530,7 @@ impl ServerSession {
                     ServerState::Connected(sid) => if sid == session_id {
                         Ok(ServerEvent::Datagram)
                     } else {
+                        info!("A stream 'datagram' event received, but session_id is unknown: {}", session_id);
                         Err(Error::Ignored)
                     },
                     _ => Err(Error::Ignored)
@@ -525,11 +542,13 @@ impl ServerSession {
                     ServerState::Requested(sid) => if sid == stream_id {
                         Ok(ServerEvent::SessionGoAway)
                     } else {
+                        info!("A stream 'goaway' event received, but stream_id is unknown: {}", stream_id);
                         Err(Error::Ignored)
                     },
                     ServerState::Connected(sid) => if sid == stream_id {
                         Ok(ServerEvent::SessionGoAway)
                     } else {
+                        info!("A stream 'goaway' event received, but stream_id is unknown: {}", stream_id);
                         Err(Error::Ignored)
                     },
                     _ => Err(Error::Ignored)
@@ -573,28 +592,35 @@ impl ServerSession {
         extra_headers: Option<&[Header]>,
     ) -> Result<()> {
         match self.state {
-            ServerState::Requested(session_id) => {
-                if code < 400 {
-                    return Err(Error::InvalidArg("code"));
-                }
-                let code = format!("{}", code).into_bytes();
-                let mut list = vec![
-                    Header::new(b":status", &code),
-                    Header::new(b"sec-webtransport-http3-draft", b"draft02"),
-                ];
-                if let Some(extra_headers) = extra_headers {
-                    list.append(&mut extra_headers.to_vec());
-                }
-                if let Err(e) = self.h3_conn.send_response(conn, session_id, &list, true) {
-                    warn!("Failed to send WebTransport reject response: {}", e);
-                }
-                self.state = ServerState::Finished;
-                // 0x10B = REQUEST_REJECTED
-                conn.close(true, 0x10B, b"")?;
-                Ok(())
-            },
+            ServerState::Requested(session_id) => self.reject_internal(conn, session_id, code, extra_headers),
             _ => Err(Error::InvalidState),
         }
+    }
+
+    fn reject_internal(
+        &mut self,
+        conn: &mut Connection,
+        stream_id: u64,
+        code: u32,
+        extra_headers: Option<&[Header]>,
+    ) -> Result<()> {
+        if code < 400 {
+            return Err(Error::InvalidArg("code"));
+        }
+        let code = format!("{}", code).into_bytes();
+        let mut list = vec![
+            Header::new(b":status", &code),
+            Header::new(b"sec-webtransport-http3-draft", b"draft02"),
+        ];
+        if let Some(extra_headers) = extra_headers {
+            list.append(&mut extra_headers.to_vec());
+        }
+        if let Err(e) = self.h3_conn.send_response(conn, stream_id, &list, true) {
+            warn!("Failed to send WebTransport reject response: {}", e);
+        }
+        self.state = ServerState::Finished;
+        conn.close(true, QUIC_CLOSE_REASON_REQUEST_REJECTED, b"")?;
+        Ok(())
     }
 
     /// open new WebTransport stream
