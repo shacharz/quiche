@@ -63,9 +63,6 @@ pub enum Error {
     /// There is no error or no work todo
     Done,
 
-    /// Event based on data sent by the client, but not related to WebTransport
-    Ignored,
-
     /// Invalid state of session.
     InvalidState,
 
@@ -81,8 +78,14 @@ pub enum Error {
     /// The direction or initiater of the specified stream does not match.
     InvalidStream,
 
+    /// The session ID in the datagram was different from the desired one.
+    DatagramSessionIdMismatch,
+
     /// Error originated from the transport layer.
     TransportError(crate::Error),
+
+    /// Unexpected data received from peer.
+    UnexpectedMessage,
 
     /// Error originated from the HTTP3 layer.
     HTTPError(h3::Error),
@@ -143,8 +146,8 @@ pub enum ServerEvent {
     /// GOAWAY was received on WebTransport session-control-stream.
     SessionGoAway,
 
-    /// Events related to HTTP other than WebTransport
-    HTTPEvent(h3::Event),
+    /// Bypassed events related to HTTP other than WebTransport
+    BypassedHTTPEvent(u64, h3::Event),
 }
 
 /// An WebTransport client session event.
@@ -155,7 +158,7 @@ pub enum ClientEvent {
     Connected,
 
     /// response for CONNECT request was received with not OK status.
-    Rejected,
+    Rejected(i32),
 
     /// WebTransport stream payload was received
     StreamData(u64),
@@ -176,7 +179,7 @@ pub enum ClientEvent {
     SessionGoAway,
 
     /// Events related to HTTP other than WebTransport
-    HTTPEvent(h3::Event),
+    BypassedHTTPEvent(u64, h3::Event),
 }
 
 /// A specialized [`Result`] type for quiche WebTransport operations.
@@ -440,7 +443,7 @@ impl ServerSession {
                         Ok((session_id_len, len))
                     } else {
                         info!("The session_id included in Datagram frame doesn't match to current WebTransport session.");
-                        Err(Error::Ignored)
+                        Err(Error::DatagramSessionIdMismatch)
                     },
                     _ => Err(Error::InvalidState)
                 }
@@ -488,13 +491,13 @@ impl ServerSession {
                         Ok(ServerEvent::StreamData(stream_id))
                     } else {
                         info!("A WebTransport stream data received, but session_id does't match: {}", session_id);
-                        Err(Error::Ignored)
+                        Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::WebTransportStreamData(session_id)))
                     },
-                    _ => Err(Error::Ignored)
+                    _ => Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::WebTransportStreamData(session_id)))
                 }
             }
 
-            Ok((_stream_id, h3::Event::Data)) => Err(Error::Ignored),
+            Ok((stream_id, h3::Event::Data)) => Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::Data)),
 
             Ok((stream_id, h3::Event::Finished)) => {
                 if self.streams.contains_key(&stream_id) {
@@ -505,15 +508,15 @@ impl ServerSession {
                             Ok(ServerEvent::SessionFinished)
                         } else {
                             info!("A stream 'finished' event received, but stream_id is unknown: {}", stream_id);
-                            Err(Error::Ignored)
+                            Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::Finished))
                         },
                         ServerState::Connected(sid) => if sid == stream_id {
                             Ok(ServerEvent::SessionFinished)
                         } else {
                             info!("A stream 'finished' event received, but stream_id is unknown: {}", stream_id);
-                            Err(Error::Ignored)
+                            Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::Finished))
                         },
-                        _ => Err(Error::Ignored)
+                        _ => Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::Finished))
                     }
                 }
             },
@@ -524,15 +527,15 @@ impl ServerSession {
                         Ok(ServerEvent::SessionReset(e))
                     } else {
                         info!("A stream 'reset' event received, but stream_id is unknown: {}", stream_id);
-                        Err(Error::Ignored)
+                        Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::Reset(e)))
                     },
                     ServerState::Connected(sid) => if sid == stream_id {
                         Ok(ServerEvent::SessionReset(e))
                     } else {
                         info!("A stream 'reset' event received, but stream_id is unknown: {}", stream_id);
-                        Err(Error::Ignored)
+                        Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::Reset(e)))
                     },
-                    _ => Err(Error::Ignored)
+                    _ => Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::Reset(e)))
                 }
             },
 
@@ -542,9 +545,9 @@ impl ServerSession {
                         Ok(ServerEvent::Datagram)
                     } else {
                         info!("A stream 'datagram' event received, but session_id is unknown: {}", session_id);
-                        Err(Error::Ignored)
+                        Ok(ServerEvent::BypassedHTTPEvent(session_id, h3::Event::Datagram))
                     },
-                    _ => Err(Error::Ignored)
+                    _ => Ok(ServerEvent::BypassedHTTPEvent(session_id, h3::Event::Datagram))
                 }
             }
 
@@ -554,15 +557,15 @@ impl ServerSession {
                         Ok(ServerEvent::SessionGoAway)
                     } else {
                         info!("A stream 'goaway' event received, but stream_id is unknown: {}", stream_id);
-                        Err(Error::Ignored)
+                        Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::GoAway))
                     },
                     ServerState::Connected(sid) => if sid == stream_id {
                         Ok(ServerEvent::SessionGoAway)
                     } else {
                         info!("A stream 'goaway' event received, but stream_id is unknown: {}", stream_id);
-                        Err(Error::Ignored)
+                        Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::GoAway))
                     },
-                    _ => Err(Error::Ignored)
+                    _ => Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::GoAway))
                 }
             },
 
@@ -784,7 +787,7 @@ impl ClientSession {
 
         match self.h3_conn.poll(conn) {
 
-            Ok((stream_id, h3::Event::Headers{ list, has_body:_ })) => {
+            Ok((stream_id, h3::Event::Headers{ list, has_body })) => {
                 match self.state {
                     ClientState::Requesting(sid) => {
                         if sid == stream_id {
@@ -795,21 +798,22 @@ impl ClientSession {
                                         self.state = ClientState::Connected(stream_id);
                                         Ok(ClientEvent::Connected)
                                     } else {
-                                        Ok(ClientEvent::Rejected)
+                                        Ok(ClientEvent::Rejected(code))
                                     }
                                 },
                                 Err(_e) => {
-                                    Ok(ClientEvent::Rejected)
+                                    debug!("header requires proper :status");
+                                    Err(Error::UnexpectedMessage)
                                 },
                             }
                         } else {
-                            // TODO close connection here?
-                            Err(Error::Ignored)
+                            debug!("Headers event received with unknown stream_id: {}", stream_id);
+                            Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::Headers{ list, has_body }))
                         }
                     },
                     _ => {
-                        // TODO close connection here?
-                        Err(Error::Ignored)
+                        debug!("Headers event received with stream_id: {}, while not requesting it.", stream_id);
+                        Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::Headers{ list, has_body }))
                     }
                 }
             },
@@ -823,15 +827,16 @@ impl ClientSession {
                         Ok(ClientEvent::StreamData(stream_id))
                     } else {
                         info!("A WebTransport stream data received, but session_id does't match: {}", session_id);
-                        Err(Error::Ignored)
+                        Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::WebTransportStreamData(session_id)))
                     },
                     _ => {
-                        Err(Error::Ignored)
+                        Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::WebTransportStreamData(session_id)))
                     }
                 }
             },
 
-            Ok((_stream_id, h3::Event::Data)) => Err(Error::Ignored),
+            Ok((stream_id, h3::Event::Data)) =>
+                        Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::Data)),
 
             Ok((stream_id, h3::Event::Finished)) => {
                 if self.streams.contains_key(&stream_id) {
@@ -842,15 +847,15 @@ impl ClientSession {
                             Ok(ClientEvent::SessionFinished)
                         } else {
                             info!("A stream 'finished' event received, but stream_id is unknown: {}", stream_id);
-                            Err(Error::Ignored)
+                            Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::Finished))
                         },
                         ClientState::Connected(sid) => if sid == stream_id {
                             Ok(ClientEvent::SessionFinished)
                         } else {
                             info!("A stream 'finished' event received, but stream_id is unknown: {}", stream_id);
-                            Err(Error::Ignored)
+                            Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::Finished))
                         },
-                        _ => Err(Error::Ignored)
+                        _ => Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::Finished))
                     }
                 }
             },
@@ -861,15 +866,15 @@ impl ClientSession {
                         Ok(ClientEvent::SessionReset(e))
                     } else {
                         info!("A stream 'reset' event received, but stream_id is unknown: {}", stream_id);
-                        Err(Error::Ignored)
+                        Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::Reset(e)))
                     },
                     ClientState::Connected(sid) => if sid == stream_id {
                         Ok(ClientEvent::SessionReset(e))
                     } else {
                         info!("A stream 'reset' event received, but stream_id is unknown: {}", stream_id);
-                        Err(Error::Ignored)
+                        Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::Reset(e)))
                     },
-                    _ => Err(Error::Ignored)
+                    _ => Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::Reset(e)))
                 }
             },
 
@@ -879,9 +884,9 @@ impl ClientSession {
                         Ok(ClientEvent::Datagram)
                     } else {
                         info!("A stream 'datagram' event received, but session_id is unknown: {}", session_id);
-                        Err(Error::Ignored)
+                        Ok(ClientEvent::BypassedHTTPEvent(session_id, h3::Event::Datagram))
                     },
-                    _ => Err(Error::Ignored)
+                    _ => Ok(ClientEvent::BypassedHTTPEvent(session_id, h3::Event::Datagram))
                 }
             },
 
@@ -891,15 +896,15 @@ impl ClientSession {
                         Ok(ClientEvent::SessionGoAway)
                     } else {
                         info!("A stream 'goaway' event received, but stream_id is unknown: {}", stream_id);
-                        Err(Error::Ignored)
+                        Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::GoAway))
                     },
                     ClientState::Connected(sid) => if sid == stream_id {
                         Ok(ClientEvent::SessionGoAway)
                     } else {
                         info!("A stream 'goaway' event received, but stream_id is unknown: {}", stream_id);
-                        Err(Error::Ignored)
+                        Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::GoAway))
                     },
-                    _ => Err(Error::Ignored)
+                    _ => Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::GoAway))
                 }
             },
 
@@ -984,7 +989,7 @@ impl ClientSession {
                         Ok((session_id_len, len))
                     } else {
                         info!("The session_id included in Datagram frame doesn't match to current WebTransport session.");
-                        Err(Error::Ignored)
+                        Err(Error::DatagramSessionIdMismatch)
                     },
                     _ => Err(Error::InvalidState)
                 }
