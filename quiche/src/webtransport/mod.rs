@@ -37,8 +37,8 @@
 //! ```
 //!
 use crate::h3::{self, Header, NameValue};
-use crate::Connection;
 use crate::stream::is_bidi;
+use crate::Connection;
 use std::collections::HashMap;
 use std::str;
 
@@ -153,7 +153,6 @@ pub enum ServerEvent {
 /// An WebTransport client session event.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ClientEvent {
-
     /// response for CONNECT request was received with OK status.
     Connected,
 
@@ -262,7 +261,9 @@ impl StreamInfo {
     }
 }
 
-fn find_request(list: &[h3::Header]) -> std::result::Result<ConnectRequest, ConnectRequestError> {
+fn find_request(
+    list: &[h3::Header],
+) -> std::result::Result<ConnectRequest, ConnectRequestError> {
     match is_webtransport_request(list) {
         Ok(()) => {
             let mut headers = list.into_iter();
@@ -272,21 +273,23 @@ fn find_request(list: &[h3::Header]) -> std::result::Result<ConnectRequest, Conn
             let origin = find_string_param(&mut headers, "origin")?;
 
             Ok(ConnectRequest::new(authority, path, origin))
-        }
+        },
 
         Err(e) => Err(e),
     }
 }
 
 fn find_string_param(
-    headers: &mut std::slice::Iter<h3::Header>,
-    param: &'static str,
+    headers: &mut std::slice::Iter<h3::Header>, param: &'static str,
 ) -> std::result::Result<String, ConnectRequestError> {
     if let Some(header) = headers.find(|h| h.name() == param.as_bytes()) {
         if let Ok(param_str) = String::from_utf8(header.value().to_vec()) {
             Ok(param_str)
         } else {
-            Err(ConnectRequestError::InvalidParam(param, header.value().to_vec()))
+            Err(ConnectRequestError::InvalidParam(
+                param,
+                header.value().to_vec(),
+            ))
         }
     } else {
         Err(ConnectRequestError::MissingParam(param))
@@ -294,17 +297,19 @@ fn find_string_param(
 }
 
 fn find_integer_param(
-    headers: &mut std::vec::IntoIter<h3::Header>,
-    param: &'static str,
+    headers: &mut std::vec::IntoIter<h3::Header>, param: &'static str,
 ) -> std::result::Result<i32, ConnectRequestError> {
     if let Some(header) = headers.find(|h| h.name() == param.as_bytes()) {
         if let Ok(param_str) = String::from_utf8(header.value().to_vec()) {
-            let param_int = param_str
-                .parse::<i32>()
-                .map_err(|_| ConnectRequestError::InvalidParam(param, header.value().to_vec()))?;
+            let param_int = param_str.parse::<i32>().map_err(|_| {
+                ConnectRequestError::InvalidParam(param, header.value().to_vec())
+            })?;
             Ok(param_int)
         } else {
-            Err(ConnectRequestError::InvalidParam(param, header.value().to_vec()))
+            Err(ConnectRequestError::InvalidParam(
+                param,
+                header.value().to_vec(),
+            ))
         }
     } else {
         Err(ConnectRequestError::MissingParam(param))
@@ -312,8 +317,7 @@ fn find_integer_param(
 }
 
 fn validate_param(
-    headers: &mut std::slice::Iter<h3::Header>,
-    param: &'static str,
+    headers: &mut std::slice::Iter<h3::Header>, param: &'static str,
     expected: &'static str,
 ) -> std::result::Result<(), ConnectRequestError> {
     if let Some(method) = headers.find(|h| h.name() == param.as_bytes()) {
@@ -331,7 +335,9 @@ fn validate_param(
     }
 }
 
-fn is_webtransport_request(list: &[h3::Header]) -> std::result::Result<(), ConnectRequestError> {
+fn is_webtransport_request(
+    list: &[h3::Header],
+) -> std::result::Result<(), ConnectRequestError> {
     let mut headers = list.into_iter();
     validate_param(&mut headers, ":method", "CONNECT")?;
     validate_param(&mut headers, ":protocol", "webtransport")?;
@@ -354,7 +360,6 @@ pub struct ServerSession {
 }
 
 impl ServerSession {
-
     fn new(h3_conn: h3::Connection) -> Self {
         Self {
             h3_conn,
@@ -404,10 +409,7 @@ impl ServerSession {
     /// [`StreamData`]: enum.ServerEvent.html#variant.StreamData
     /// [`Done`]: enum.Error.html#variant.Done
     pub fn recv_stream_data(
-        &mut self,
-        conn: &mut Connection,
-        stream_id: u64,
-        out: &mut [u8],
+        &mut self, conn: &mut Connection, stream_id: u64, out: &mut [u8],
     ) -> Result<usize> {
         self.h3_conn
             .recv_webtransport_stream_data(conn, stream_id, out)
@@ -432,22 +434,20 @@ impl ServerSession {
     /// [`Done`]: enum.Error.html#variant.Done
     /// [`BufferTooShort`]: ../h3/enum.Error.html#variant.BufferTooShort
     pub fn recv_dgram(
-        &mut self,
-        conn: &mut Connection,
-        buf: &mut [u8],
+        &mut self, conn: &mut Connection, buf: &mut [u8],
     ) -> Result<(usize, usize)> {
         match self.h3_conn.recv_dgram(conn, buf) {
-            Ok((len, session_id, session_id_len)) => {
-                match self.state {
-                    ServerState::Connected(sid) => if sid == session_id {
+            Ok((len, session_id, session_id_len)) => match self.state {
+                ServerState::Connected(sid) => {
+                    if sid == session_id {
                         Ok((session_id_len, len))
                     } else {
                         info!("The session_id included in Datagram frame doesn't match to current WebTransport session.");
                         Err(Error::DatagramSessionIdMismatch)
-                    },
-                    _ => Err(Error::InvalidState)
-                }
-            }
+                    }
+                },
+                _ => Err(Error::InvalidState),
+            },
             Err(e) => Err(e.into()),
         }
     }
@@ -462,7 +462,7 @@ impl ServerSession {
     /// is re-armed.
     pub fn poll(&mut self, conn: &mut Connection) -> Result<ServerEvent> {
         match self.h3_conn.poll(conn) {
-            Ok((stream_id, h3::Event::Headers { list, has_body:_ })) => {
+            Ok((stream_id, h3::Event::Headers { list, has_body: _ })) => {
                 match find_request(&list) {
                     Ok(wt_req) => {
                         if self.state == ServerState::Init {
@@ -470,103 +470,170 @@ impl ServerSession {
                             Ok(ServerEvent::ConnectRequest(wt_req))
                         } else {
                             info!("A New WebTransport request is received while current state is not idle: {:?}", self.state);
-                            let _ = self.reject_internal(conn, stream_id, HTTP_STATUS_TOO_MANY_REQUESTS, None);
+                            let _ = self.reject_internal(
+                                conn,
+                                stream_id,
+                                HTTP_STATUS_TOO_MANY_REQUESTS,
+                                None,
+                            );
                             Err(Error::Done)
                         }
-                    }
+                    },
                     Err(e) => {
-                        info!("This is a bad request to connect WebTransport: {:?}", e);
-                        let _ = self.reject_internal(conn, stream_id, HTTP_STATUS_BAD_REQUEST, None);
+                        info!(
+                            "This is a bad request to connect WebTransport: {:?}",
+                            e
+                        );
+                        let _ = self.reject_internal(
+                            conn,
+                            stream_id,
+                            HTTP_STATUS_BAD_REQUEST,
+                            None,
+                        );
                         Err(Error::Done)
-                    }
+                    },
                 }
-            }
+            },
 
             Ok((stream_id, h3::Event::WebTransportStreamData(session_id))) => {
                 match self.state {
-                    ServerState::Connected(sid) => if sid == session_id {
-                        if !self.streams.contains_key(&stream_id) {
-                            self.streams.insert(stream_id, StreamInfo::new(stream_id, false));
+                    ServerState::Connected(sid) => {
+                        if sid == session_id {
+                            if !self.streams.contains_key(&stream_id) {
+                                self.streams.insert(
+                                    stream_id,
+                                    StreamInfo::new(stream_id, false),
+                                );
+                            }
+                            Ok(ServerEvent::StreamData(stream_id))
+                        } else {
+                            info!("A WebTransport stream data received, but session_id does't match: {}", session_id);
+                            Ok(ServerEvent::BypassedHTTPEvent(
+                                stream_id,
+                                h3::Event::WebTransportStreamData(session_id),
+                            ))
                         }
-                        Ok(ServerEvent::StreamData(stream_id))
-                    } else {
-                        info!("A WebTransport stream data received, but session_id does't match: {}", session_id);
-                        Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::WebTransportStreamData(session_id)))
                     },
-                    _ => Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::WebTransportStreamData(session_id)))
+                    _ => Ok(ServerEvent::BypassedHTTPEvent(
+                        stream_id,
+                        h3::Event::WebTransportStreamData(session_id),
+                    )),
                 }
-            }
+            },
 
-            Ok((stream_id, h3::Event::Data)) => Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::Data)),
+            Ok((stream_id, h3::Event::Data)) => {
+                Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::Data))
+            },
 
             Ok((stream_id, h3::Event::Finished)) => {
                 if self.streams.contains_key(&stream_id) {
                     Ok(ServerEvent::StreamFinished(stream_id))
                 } else {
                     match self.state {
-                        ServerState::Requested(sid) => if sid == stream_id {
-                            Ok(ServerEvent::SessionFinished)
-                        } else {
-                            info!("A stream 'finished' event received, but stream_id is unknown: {}", stream_id);
-                            Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::Finished))
+                        ServerState::Requested(sid) => {
+                            if sid == stream_id {
+                                Ok(ServerEvent::SessionFinished)
+                            } else {
+                                info!("A stream 'finished' event received, but stream_id is unknown: {}", stream_id);
+                                Ok(ServerEvent::BypassedHTTPEvent(
+                                    stream_id,
+                                    h3::Event::Finished,
+                                ))
+                            }
                         },
-                        ServerState::Connected(sid) => if sid == stream_id {
-                            Ok(ServerEvent::SessionFinished)
-                        } else {
-                            info!("A stream 'finished' event received, but stream_id is unknown: {}", stream_id);
-                            Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::Finished))
+                        ServerState::Connected(sid) => {
+                            if sid == stream_id {
+                                Ok(ServerEvent::SessionFinished)
+                            } else {
+                                info!("A stream 'finished' event received, but stream_id is unknown: {}", stream_id);
+                                Ok(ServerEvent::BypassedHTTPEvent(
+                                    stream_id,
+                                    h3::Event::Finished,
+                                ))
+                            }
                         },
-                        _ => Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::Finished))
+                        _ => Ok(ServerEvent::BypassedHTTPEvent(
+                            stream_id,
+                            h3::Event::Finished,
+                        )),
                     }
                 }
             },
 
-            Ok((stream_id, h3::Event::Reset(e))) => {
-                match self.state {
-                    ServerState::Requested(sid) => if sid == stream_id {
+            Ok((stream_id, h3::Event::Reset(e))) => match self.state {
+                ServerState::Requested(sid) => {
+                    if sid == stream_id {
                         Ok(ServerEvent::SessionReset(e))
                     } else {
                         info!("A stream 'reset' event received, but stream_id is unknown: {}", stream_id);
-                        Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::Reset(e)))
-                    },
-                    ServerState::Connected(sid) => if sid == stream_id {
+                        Ok(ServerEvent::BypassedHTTPEvent(
+                            stream_id,
+                            h3::Event::Reset(e),
+                        ))
+                    }
+                },
+                ServerState::Connected(sid) => {
+                    if sid == stream_id {
                         Ok(ServerEvent::SessionReset(e))
                     } else {
                         info!("A stream 'reset' event received, but stream_id is unknown: {}", stream_id);
-                        Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::Reset(e)))
-                    },
-                    _ => Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::Reset(e)))
-                }
+                        Ok(ServerEvent::BypassedHTTPEvent(
+                            stream_id,
+                            h3::Event::Reset(e),
+                        ))
+                    }
+                },
+                _ => Ok(ServerEvent::BypassedHTTPEvent(
+                    stream_id,
+                    h3::Event::Reset(e),
+                )),
             },
 
-            Ok((session_id, h3::Event::Datagram)) => {
-                match self.state {
-                    ServerState::Connected(sid) => if sid == session_id {
+            Ok((session_id, h3::Event::Datagram)) => match self.state {
+                ServerState::Connected(sid) => {
+                    if sid == session_id {
                         Ok(ServerEvent::Datagram)
                     } else {
                         info!("A stream 'datagram' event received, but session_id is unknown: {}", session_id);
-                        Ok(ServerEvent::BypassedHTTPEvent(session_id, h3::Event::Datagram))
-                    },
-                    _ => Ok(ServerEvent::BypassedHTTPEvent(session_id, h3::Event::Datagram))
-                }
-            }
+                        Ok(ServerEvent::BypassedHTTPEvent(
+                            session_id,
+                            h3::Event::Datagram,
+                        ))
+                    }
+                },
+                _ => Ok(ServerEvent::BypassedHTTPEvent(
+                    session_id,
+                    h3::Event::Datagram,
+                )),
+            },
 
-            Ok((stream_id, h3::Event::GoAway)) => {
-                match self.state {
-                    ServerState::Requested(sid) => if sid == stream_id {
+            Ok((stream_id, h3::Event::GoAway)) => match self.state {
+                ServerState::Requested(sid) => {
+                    if sid == stream_id {
                         Ok(ServerEvent::SessionGoAway)
                     } else {
                         info!("A stream 'goaway' event received, but stream_id is unknown: {}", stream_id);
-                        Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::GoAway))
-                    },
-                    ServerState::Connected(sid) => if sid == stream_id {
+                        Ok(ServerEvent::BypassedHTTPEvent(
+                            stream_id,
+                            h3::Event::GoAway,
+                        ))
+                    }
+                },
+                ServerState::Connected(sid) => {
+                    if sid == stream_id {
                         Ok(ServerEvent::SessionGoAway)
                     } else {
                         info!("A stream 'goaway' event received, but stream_id is unknown: {}", stream_id);
-                        Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::GoAway))
-                    },
-                    _ => Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::GoAway))
-                }
+                        Ok(ServerEvent::BypassedHTTPEvent(
+                            stream_id,
+                            h3::Event::GoAway,
+                        ))
+                    }
+                },
+                _ => Ok(ServerEvent::BypassedHTTPEvent(
+                    stream_id,
+                    h3::Event::GoAway,
+                )),
             },
 
             Err(h3::Error::Done) => Err(Error::Done),
@@ -577,9 +644,7 @@ impl ServerSession {
 
     /// accept connect request
     pub fn accept_connect_request(
-        &mut self,
-        conn: &mut Connection,
-        extra_headers: Option<&[Header]>,
+        &mut self, conn: &mut Connection, extra_headers: Option<&[Header]>,
     ) -> Result<()> {
         match self.state {
             ServerState::Requested(session_id) => {
@@ -590,7 +655,8 @@ impl ServerSession {
                 if let Some(extra_headers) = extra_headers {
                     list.append(&mut extra_headers.to_vec());
                 }
-                let _ = self.h3_conn.send_response(conn, session_id, &list, false)?;
+                let _ =
+                    self.h3_conn.send_response(conn, session_id, &list, false)?;
                 self.state = ServerState::Connected(session_id);
                 Ok(())
             },
@@ -600,22 +666,19 @@ impl ServerSession {
 
     /// reject connect request
     pub fn reject_connect_request(
-        &mut self,
-        conn: &mut Connection,
-        code: u32,
+        &mut self, conn: &mut Connection, code: u32,
         extra_headers: Option<&[Header]>,
     ) -> Result<()> {
         match self.state {
-            ServerState::Requested(session_id) => self.reject_internal(conn, session_id, code, extra_headers),
+            ServerState::Requested(session_id) => {
+                self.reject_internal(conn, session_id, code, extra_headers)
+            },
             _ => Err(Error::InvalidState),
         }
     }
 
     fn reject_internal(
-        &mut self,
-        conn: &mut Connection,
-        stream_id: u64,
-        code: u32,
+        &mut self, conn: &mut Connection, stream_id: u64, code: u32,
         extra_headers: Option<&[Header]>,
     ) -> Result<()> {
         if code < 400 {
@@ -639,9 +702,7 @@ impl ServerSession {
 
     /// open new WebTransport stream
     pub fn open_stream(
-        &mut self,
-        conn: &mut Connection,
-        is_bidi: bool,
+        &mut self, conn: &mut Connection, is_bidi: bool,
     ) -> Result<u64> {
         match self.state {
             ServerState::Connected(session_id) => {
@@ -654,21 +715,18 @@ impl ServerSession {
                         stream.mark_initialized();
                         self.streams.insert(stream_id, stream);
                         Ok(stream_id)
-                    }
+                    },
 
                     Err(e) => Err(e.into()),
                 }
-            }
+            },
             _ => Err(Error::InvalidState),
         }
     }
 
     /// send WebTransport stream data
     pub fn send_stream_data(
-        &mut self,
-        conn: &mut Connection,
-        stream_id: u64,
-        data: &[u8],
+        &mut self, conn: &mut Connection, stream_id: u64, data: &[u8],
     ) -> Result<usize> {
         match self.state {
             ServerState::Connected(_session_id) => {
@@ -677,10 +735,11 @@ impl ServerSession {
                         if !stream.is_bidi() && !stream.is_local() {
                             Err(Error::InvalidStream)
                         } else {
-                            let written = conn.stream_send(stream_id, &data, false)?;
+                            let written =
+                                conn.stream_send(stream_id, &data, false)?;
                             Ok(written)
                         }
-                    }
+                    },
                     None => Err(Error::StreamNotFound),
                 }
             },
@@ -690,16 +749,14 @@ impl ServerSession {
 
     /// send WebTransport dgram
     pub fn send_dgram(
-        &mut self,
-        conn: &mut Connection,
-        data: &[u8],
+        &mut self, conn: &mut Connection, data: &[u8],
     ) -> Result<()> {
         match self.state {
             ServerState::Connected(session_id) => {
                 self.h3_conn.send_dgram(conn, session_id, data)?;
                 Ok(())
             },
-            _ => Err(Error::InvalidState)
+            _ => Err(Error::InvalidState),
         }
     }
 }
@@ -719,7 +776,6 @@ pub struct ClientSession {
 }
 
 impl ClientSession {
-
     fn new(h3_conn: h3::Connection) -> Self {
         Self {
             h3_conn,
@@ -736,9 +792,7 @@ impl ClientSession {
         }
     }
 
-    pub fn with_transport(
-        conn: &mut Connection,
-    ) -> Result<Self> {
+    pub fn with_transport(conn: &mut Connection) -> Result<Self> {
         if !conn.dgram_enabled() {
             return Err(Error::InvalidConfig("dgram_enabled"));
         }
@@ -752,12 +806,8 @@ impl ClientSession {
     }
 
     pub fn send_connect_request(
-        &mut self,
-        conn: &mut Connection,
-        authority: &[u8],
-        path: &[u8],
-        origin: &[u8],
-        extra_headers: Option<&[Header]>,
+        &mut self, conn: &mut Connection, authority: &[u8], path: &[u8],
+        origin: &[u8], extra_headers: Option<&[Header]>,
     ) -> Result<u64> {
         if self.state != ClientState::Init {
             return Err(Error::InvalidState);
@@ -780,14 +830,9 @@ impl ClientSession {
         Ok(stream_id)
     }
 
-    pub fn poll(
-        &mut self,
-        conn: &mut Connection,
-    ) -> Result<ClientEvent> {
-
+    pub fn poll(&mut self, conn: &mut Connection) -> Result<ClientEvent> {
         match self.h3_conn.poll(conn) {
-
-            Ok((stream_id, h3::Event::Headers{ list, has_body })) => {
+            Ok((stream_id, h3::Event::Headers { list, has_body })) => {
                 match self.state {
                     ClientState::Requesting(sid) => {
                         if sid == stream_id {
@@ -795,7 +840,8 @@ impl ClientSession {
                             match find_integer_param(&mut headers, ":status") {
                                 Ok(code) => {
                                     if code >= 200 && code < 300 {
-                                        self.state = ClientState::Connected(stream_id);
+                                        self.state =
+                                            ClientState::Connected(stream_id);
                                         Ok(ClientEvent::Connected)
                                     } else {
                                         Ok(ClientEvent::Rejected(code))
@@ -808,104 +854,161 @@ impl ClientSession {
                             }
                         } else {
                             debug!("Headers event received with unknown stream_id: {}", stream_id);
-                            Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::Headers{ list, has_body }))
+                            Ok(ClientEvent::BypassedHTTPEvent(
+                                stream_id,
+                                h3::Event::Headers { list, has_body },
+                            ))
                         }
                     },
                     _ => {
                         debug!("Headers event received with stream_id: {}, while not requesting it.", stream_id);
-                        Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::Headers{ list, has_body }))
-                    }
+                        Ok(ClientEvent::BypassedHTTPEvent(
+                            stream_id,
+                            h3::Event::Headers { list, has_body },
+                        ))
+                    },
                 }
             },
 
             Ok((stream_id, h3::Event::WebTransportStreamData(session_id))) => {
                 match self.state {
-                    ClientState::Connected(sid) => if sid == session_id {
-                        if !self.streams.contains_key(&stream_id) {
-                            self.streams.insert(stream_id, StreamInfo::new(stream_id, false));
+                    ClientState::Connected(sid) => {
+                        if sid == session_id {
+                            if !self.streams.contains_key(&stream_id) {
+                                self.streams.insert(
+                                    stream_id,
+                                    StreamInfo::new(stream_id, false),
+                                );
+                            }
+                            Ok(ClientEvent::StreamData(stream_id))
+                        } else {
+                            info!("A WebTransport stream data received, but session_id does't match: {}", session_id);
+                            Ok(ClientEvent::BypassedHTTPEvent(
+                                stream_id,
+                                h3::Event::WebTransportStreamData(session_id),
+                            ))
                         }
-                        Ok(ClientEvent::StreamData(stream_id))
-                    } else {
-                        info!("A WebTransport stream data received, but session_id does't match: {}", session_id);
-                        Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::WebTransportStreamData(session_id)))
                     },
-                    _ => {
-                        Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::WebTransportStreamData(session_id)))
-                    }
+                    _ => Ok(ClientEvent::BypassedHTTPEvent(
+                        stream_id,
+                        h3::Event::WebTransportStreamData(session_id),
+                    )),
                 }
             },
 
-            Ok((stream_id, h3::Event::Data)) =>
-                        Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::Data)),
+            Ok((stream_id, h3::Event::Data)) => {
+                Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::Data))
+            },
 
             Ok((stream_id, h3::Event::Finished)) => {
                 if self.streams.contains_key(&stream_id) {
                     Ok(ClientEvent::StreamFinished(stream_id))
                 } else {
                     match self.state {
-                        ClientState::Requesting(sid) => if sid == stream_id {
-                            Ok(ClientEvent::SessionFinished)
-                        } else {
-                            info!("A stream 'finished' event received, but stream_id is unknown: {}", stream_id);
-                            Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::Finished))
+                        ClientState::Requesting(sid) => {
+                            if sid == stream_id {
+                                Ok(ClientEvent::SessionFinished)
+                            } else {
+                                info!("A stream 'finished' event received, but stream_id is unknown: {}", stream_id);
+                                Ok(ClientEvent::BypassedHTTPEvent(
+                                    stream_id,
+                                    h3::Event::Finished,
+                                ))
+                            }
                         },
-                        ClientState::Connected(sid) => if sid == stream_id {
-                            Ok(ClientEvent::SessionFinished)
-                        } else {
-                            info!("A stream 'finished' event received, but stream_id is unknown: {}", stream_id);
-                            Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::Finished))
+                        ClientState::Connected(sid) => {
+                            if sid == stream_id {
+                                Ok(ClientEvent::SessionFinished)
+                            } else {
+                                info!("A stream 'finished' event received, but stream_id is unknown: {}", stream_id);
+                                Ok(ClientEvent::BypassedHTTPEvent(
+                                    stream_id,
+                                    h3::Event::Finished,
+                                ))
+                            }
                         },
-                        _ => Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::Finished))
+                        _ => Ok(ClientEvent::BypassedHTTPEvent(
+                            stream_id,
+                            h3::Event::Finished,
+                        )),
                     }
                 }
             },
 
-            Ok((stream_id, h3::Event::Reset(e))) => {
-                match self.state {
-                    ClientState::Requesting(sid) => if sid == stream_id {
+            Ok((stream_id, h3::Event::Reset(e))) => match self.state {
+                ClientState::Requesting(sid) => {
+                    if sid == stream_id {
                         Ok(ClientEvent::SessionReset(e))
                     } else {
                         info!("A stream 'reset' event received, but stream_id is unknown: {}", stream_id);
-                        Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::Reset(e)))
-                    },
-                    ClientState::Connected(sid) => if sid == stream_id {
+                        Ok(ClientEvent::BypassedHTTPEvent(
+                            stream_id,
+                            h3::Event::Reset(e),
+                        ))
+                    }
+                },
+                ClientState::Connected(sid) => {
+                    if sid == stream_id {
                         Ok(ClientEvent::SessionReset(e))
                     } else {
                         info!("A stream 'reset' event received, but stream_id is unknown: {}", stream_id);
-                        Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::Reset(e)))
-                    },
-                    _ => Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::Reset(e)))
-                }
+                        Ok(ClientEvent::BypassedHTTPEvent(
+                            stream_id,
+                            h3::Event::Reset(e),
+                        ))
+                    }
+                },
+                _ => Ok(ClientEvent::BypassedHTTPEvent(
+                    stream_id,
+                    h3::Event::Reset(e),
+                )),
             },
 
-            Ok((session_id, h3::Event::Datagram)) => {
-                match self.state {
-                    ClientState::Connected(sid) => if sid == session_id {
+            Ok((session_id, h3::Event::Datagram)) => match self.state {
+                ClientState::Connected(sid) => {
+                    if sid == session_id {
                         Ok(ClientEvent::Datagram)
                     } else {
                         info!("A stream 'datagram' event received, but session_id is unknown: {}", session_id);
-                        Ok(ClientEvent::BypassedHTTPEvent(session_id, h3::Event::Datagram))
-                    },
-                    _ => Ok(ClientEvent::BypassedHTTPEvent(session_id, h3::Event::Datagram))
-                }
+                        Ok(ClientEvent::BypassedHTTPEvent(
+                            session_id,
+                            h3::Event::Datagram,
+                        ))
+                    }
+                },
+                _ => Ok(ClientEvent::BypassedHTTPEvent(
+                    session_id,
+                    h3::Event::Datagram,
+                )),
             },
 
-            Ok((stream_id, h3::Event::GoAway)) => {
-                match self.state {
-                    ClientState::Requesting(sid) => if sid == stream_id {
+            Ok((stream_id, h3::Event::GoAway)) => match self.state {
+                ClientState::Requesting(sid) => {
+                    if sid == stream_id {
                         Ok(ClientEvent::SessionGoAway)
                     } else {
                         info!("A stream 'goaway' event received, but stream_id is unknown: {}", stream_id);
-                        Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::GoAway))
-                    },
-                    ClientState::Connected(sid) => if sid == stream_id {
+                        Ok(ClientEvent::BypassedHTTPEvent(
+                            stream_id,
+                            h3::Event::GoAway,
+                        ))
+                    }
+                },
+                ClientState::Connected(sid) => {
+                    if sid == stream_id {
                         Ok(ClientEvent::SessionGoAway)
                     } else {
                         info!("A stream 'goaway' event received, but stream_id is unknown: {}", stream_id);
-                        Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::GoAway))
-                    },
-                    _ => Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::GoAway))
-                }
+                        Ok(ClientEvent::BypassedHTTPEvent(
+                            stream_id,
+                            h3::Event::GoAway,
+                        ))
+                    }
+                },
+                _ => Ok(ClientEvent::BypassedHTTPEvent(
+                    stream_id,
+                    h3::Event::GoAway,
+                )),
             },
 
             Err(h3::Error::Done) => Err(Error::Done),
@@ -915,9 +1018,7 @@ impl ClientSession {
     }
     /// open new WebTransport stream
     pub fn open_stream(
-        &mut self,
-        conn: &mut Connection,
-        is_bidi: bool,
+        &mut self, conn: &mut Connection, is_bidi: bool,
     ) -> Result<u64> {
         match self.state {
             ClientState::Connected(session_id) => {
@@ -930,21 +1031,18 @@ impl ClientSession {
                         stream.mark_initialized();
                         self.streams.insert(stream_id, stream);
                         Ok(stream_id)
-                    }
+                    },
 
                     Err(e) => Err(e.into()),
                 }
-            }
+            },
             _ => Err(Error::InvalidState),
         }
     }
 
     /// send WebTransport stream data
     pub fn send_stream_data(
-        &mut self,
-        conn: &mut Connection,
-        stream_id: u64,
-        data: &[u8],
+        &mut self, conn: &mut Connection, stream_id: u64, data: &[u8],
     ) -> Result<usize> {
         match self.state {
             ClientState::Connected(session_id) => {
@@ -953,15 +1051,20 @@ impl ClientSession {
                         if !stream.is_bidi() && !stream.is_local() {
                             Err(Error::InvalidStream)
                         } else {
-                            if stream.is_bidi() && !stream.is_local() && !stream.is_initialized() {
-                                self.h3_conn
-                                    .send_webtransport_frame_header(conn, session_id, stream_id)?;
+                            if stream.is_bidi()
+                                && !stream.is_local()
+                                && !stream.is_initialized()
+                            {
+                                self.h3_conn.send_webtransport_frame_header(
+                                    conn, session_id, stream_id,
+                                )?;
                                 stream.mark_initialized();
                             }
-                            let written = conn.stream_send(stream_id, &data, false)?;
+                            let written =
+                                conn.stream_send(stream_id, &data, false)?;
                             Ok(written)
                         }
-                    }
+                    },
                     None => Err(Error::StreamNotFound),
                 }
             },
@@ -978,38 +1081,34 @@ impl ClientSession {
     }
 
     pub fn recv_dgram(
-        &mut self,
-        conn: &mut Connection,
-        buf: &mut [u8],
+        &mut self, conn: &mut Connection, buf: &mut [u8],
     ) -> Result<(usize, usize)> {
         match self.h3_conn.recv_dgram(conn, buf) {
-            Ok((len, session_id, session_id_len)) => {
-                match self.state {
-                    ClientState::Connected(sid) => if sid == session_id {
+            Ok((len, session_id, session_id_len)) => match self.state {
+                ClientState::Connected(sid) => {
+                    if sid == session_id {
                         Ok((session_id_len, len))
                     } else {
                         info!("The session_id included in Datagram frame doesn't match to current WebTransport session.");
                         Err(Error::DatagramSessionIdMismatch)
-                    },
-                    _ => Err(Error::InvalidState)
-                }
-            }
+                    }
+                },
+                _ => Err(Error::InvalidState),
+            },
             Err(e) => Err(e.into()),
         }
     }
 
     /// send WebTransport dgram
     pub fn send_dgram(
-        &mut self,
-        conn: &mut Connection,
-        data: &[u8],
+        &mut self, conn: &mut Connection, data: &[u8],
     ) -> Result<()> {
         match self.state {
             ClientState::Connected(session_id) => {
                 self.h3_conn.send_dgram(conn, session_id, data)?;
                 Ok(())
             },
-            _ => Err(Error::InvalidState)
+            _ => Err(Error::InvalidState),
         }
     }
 }
