@@ -452,7 +452,7 @@ impl ServerSession {
         }
     }
 
-    /// Processes WebTransport data received from the peer.
+    /// Processes WebTransport event received from the peer.
     ///
     /// On success it returns an [`Event`] and an ID, or [`Done`] when there are
     /// no events to report.
@@ -530,18 +530,8 @@ impl ServerSession {
                     Ok(ServerEvent::StreamFinished(stream_id))
                 } else {
                     match self.state {
-                        ServerState::Requested(sid) => {
-                            if sid == stream_id {
-                                Ok(ServerEvent::SessionFinished)
-                            } else {
-                                info!("A stream 'finished' event received, but stream_id is unknown: {}", stream_id);
-                                Ok(ServerEvent::BypassedHTTPEvent(
-                                    stream_id,
-                                    h3::Event::Finished,
-                                ))
-                            }
-                        },
-                        ServerState::Connected(sid) => {
+                        ServerState::Requested(sid)
+                        | ServerState::Connected(sid) => {
                             if sid == stream_id {
                                 Ok(ServerEvent::SessionFinished)
                             } else {
@@ -561,18 +551,7 @@ impl ServerSession {
             },
 
             Ok((stream_id, h3::Event::Reset(e))) => match self.state {
-                ServerState::Requested(sid) => {
-                    if sid == stream_id {
-                        Ok(ServerEvent::SessionReset(e))
-                    } else {
-                        info!("A stream 'reset' event received, but stream_id is unknown: {}", stream_id);
-                        Ok(ServerEvent::BypassedHTTPEvent(
-                            stream_id,
-                            h3::Event::Reset(e),
-                        ))
-                    }
-                },
-                ServerState::Connected(sid) => {
+                ServerState::Requested(sid) | ServerState::Connected(sid) => {
                     if sid == stream_id {
                         Ok(ServerEvent::SessionReset(e))
                     } else {
@@ -608,18 +587,7 @@ impl ServerSession {
             },
 
             Ok((stream_id, h3::Event::GoAway)) => match self.state {
-                ServerState::Requested(sid) => {
-                    if sid == stream_id {
-                        Ok(ServerEvent::SessionGoAway)
-                    } else {
-                        info!("A stream 'goaway' event received, but stream_id is unknown: {}", stream_id);
-                        Ok(ServerEvent::BypassedHTTPEvent(
-                            stream_id,
-                            h3::Event::GoAway,
-                        ))
-                    }
-                },
-                ServerState::Connected(sid) => {
+                ServerState::Requested(sid) | ServerState::Connected(sid) => {
                     if sid == stream_id {
                         Ok(ServerEvent::SessionGoAway)
                     } else {
@@ -792,6 +760,14 @@ impl ClientSession {
         }
     }
 
+    /// Create a new WebTransport client using the provided QUIC connection.
+    ///
+    /// This includes the HTTP/3 handshake.
+    ///
+    /// On success the new session is returned.
+    ///
+    /// The [`StreamLimit`] error is returned when the HTTP/3 control stream
+    /// cannot be created.
     pub fn with_transport(conn: &mut Connection) -> Result<Self> {
         if !conn.dgram_enabled() {
             return Err(Error::InvalidConfig("dgram_enabled"));
@@ -805,6 +781,7 @@ impl ClientSession {
         Ok(Self::new(h3_conn))
     }
 
+    /// Sends a WebTransport start request.
     pub fn send_connect_request(
         &mut self, conn: &mut Connection, authority: &[u8], path: &[u8],
         origin: &[u8], extra_headers: Option<&[Header]>,
@@ -830,6 +807,14 @@ impl ClientSession {
         Ok(stream_id)
     }
 
+    /// Processes WebTransport event received from the peer.
+    ///
+    /// On success it returns an [`Event`] and an ID, or [`Done`] when there are
+    /// no events to report.
+    ///
+    /// Note that all events are edge-triggered, meaning that once reported they
+    /// will not be reported again by calling this method again, until the event
+    /// is re-armed.
     pub fn poll(&mut self, conn: &mut Connection) -> Result<ClientEvent> {
         match self.h3_conn.poll(conn) {
             Ok((stream_id, h3::Event::Headers { list, has_body })) => {
@@ -905,18 +890,8 @@ impl ClientSession {
                     Ok(ClientEvent::StreamFinished(stream_id))
                 } else {
                     match self.state {
-                        ClientState::Requesting(sid) => {
-                            if sid == stream_id {
-                                Ok(ClientEvent::SessionFinished)
-                            } else {
-                                info!("A stream 'finished' event received, but stream_id is unknown: {}", stream_id);
-                                Ok(ClientEvent::BypassedHTTPEvent(
-                                    stream_id,
-                                    h3::Event::Finished,
-                                ))
-                            }
-                        },
-                        ClientState::Connected(sid) => {
+                        ClientState::Requesting(sid)
+                        | ClientState::Connected(sid) => {
                             if sid == stream_id {
                                 Ok(ClientEvent::SessionFinished)
                             } else {
@@ -936,18 +911,7 @@ impl ClientSession {
             },
 
             Ok((stream_id, h3::Event::Reset(e))) => match self.state {
-                ClientState::Requesting(sid) => {
-                    if sid == stream_id {
-                        Ok(ClientEvent::SessionReset(e))
-                    } else {
-                        info!("A stream 'reset' event received, but stream_id is unknown: {}", stream_id);
-                        Ok(ClientEvent::BypassedHTTPEvent(
-                            stream_id,
-                            h3::Event::Reset(e),
-                        ))
-                    }
-                },
-                ClientState::Connected(sid) => {
+                ClientState::Requesting(sid) | ClientState::Connected(sid) => {
                     if sid == stream_id {
                         Ok(ClientEvent::SessionReset(e))
                     } else {
@@ -983,18 +947,7 @@ impl ClientSession {
             },
 
             Ok((stream_id, h3::Event::GoAway)) => match self.state {
-                ClientState::Requesting(sid) => {
-                    if sid == stream_id {
-                        Ok(ClientEvent::SessionGoAway)
-                    } else {
-                        info!("A stream 'goaway' event received, but stream_id is unknown: {}", stream_id);
-                        Ok(ClientEvent::BypassedHTTPEvent(
-                            stream_id,
-                            h3::Event::GoAway,
-                        ))
-                    }
-                },
-                ClientState::Connected(sid) => {
+                ClientState::Requesting(sid) | ClientState::Connected(sid) => {
                     if sid == stream_id {
                         Ok(ClientEvent::SessionGoAway)
                     } else {
@@ -1072,6 +1025,17 @@ impl ClientSession {
         }
     }
 
+    /// Reads stream payload data into the provided buffer.
+    ///
+    /// Applications should call this method whenever the [`poll()`] method
+    /// returns a [`StreamData`] event.
+    ///
+    /// On success the amount of bytes read is returned, or [`Done`] if there
+    /// is no data to read.
+    ///
+    /// [`poll()`]: struct.ClientSession.html#method.poll
+    /// [`StreamData`]: enum.ClientEvent.html#variant.StreamData
+    /// [`Done`]: enum.Error.html#variant.Done
     pub fn recv_stream_data(
         &mut self, conn: &mut Connection, stream_id: u64, out: &mut [u8],
     ) -> Result<usize> {
@@ -1080,6 +1044,23 @@ impl ClientSession {
             .map_err(|e| e.into())
     }
 
+    /// Reads a DATAGRAM into the provided buffer.
+    ///
+    /// Applications should call this method whenever the [`poll()`] method
+    /// returns a [`Datagram`] event.
+    ///
+    /// On success the DATAGRAM data is returned, with offset wichi represents
+    /// length of the session ID and total length of data.
+    ///
+    /// [`Done`] is returned if there is no data to read.
+    ///
+    /// [`BufferTooShort`] is returned if the provided buffer is too small for
+    /// the data.
+    ///
+    /// [`poll()`]: struct.ClientSession.html#method.poll
+    /// [`Datagram`]: enum.ClientEvent.html#variant.Datagram
+    /// [`Done`]: enum.Error.html#variant.Done
+    /// [`BufferTooShort`]: ../h3/enum.Error.html#variant.BufferTooShort
     pub fn recv_dgram(
         &mut self, conn: &mut Connection, buf: &mut [u8],
     ) -> Result<(usize, usize)> {
