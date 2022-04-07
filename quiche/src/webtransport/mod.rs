@@ -807,6 +807,12 @@ impl ClientSession {
         Ok(stream_id)
     }
 
+    /// Returns true if peer settings is already received and
+    /// it indicates WebTransport is enabled.
+    pub fn is_peer_ready(&self) -> bool {
+        self.h3_conn.webtransport_enabled_by_peer()
+    }
+
     /// Processes WebTransport event received from the peer.
     ///
     /// On success it returns an [`Event`] and an ID, or [`Done`] when there are
