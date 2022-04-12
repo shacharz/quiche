@@ -306,8 +306,10 @@ impl Stream {
                         (frame::DATA_FRAME_TYPE_ID, false) =>
                             return Err(Error::FrameUnexpected),
 
-                        (frame::WEBTRANSPORT_FRAME_TYPE_ID, true) =>
-                            return Err(Error::FrameUnexpected),
+                        (frame::WEBTRANSPORT_FRAME_TYPE_ID, true) => {
+                            self.local_initialized = true;
+                            next_state = State::WebTransportSessionId;
+                        }
 
                         (frame::WEBTRANSPORT_FRAME_TYPE_ID, false) => {
                             self.remote_initialized = true;

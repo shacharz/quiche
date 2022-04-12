@@ -854,12 +854,15 @@ impl Connection {
         &mut self, conn: &mut super::Connection, session_id: u64, bidi: bool,
     ) -> Result<u64> {
 
+
         let stream_id = if bidi {
             let stream_id = self.next_request_stream_id;
             self.send_webtransport_frame_header(conn, session_id, stream_id)?;
-            if let Some(s) = self.streams.get_mut(&stream_id) {
-                s.initialize_local();
-            }
+
+            let mut stream = stream::Stream::new(stream_id, true);
+            stream.set_frame_type(frame::WEBTRANSPORT_FRAME_TYPE_ID)?;
+            stream.set_webtransport_session_id(session_id)?;
+            self.streams.insert(stream_id, stream);
 
             // To avoid skipping stream IDs, we only calculate the next available
             // stream ID when a request has been successfully buffered.
