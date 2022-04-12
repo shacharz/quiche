@@ -266,7 +266,7 @@ fn find_request(
 ) -> std::result::Result<ConnectRequest, ConnectRequestError> {
     match is_webtransport_request(list) {
         Ok(()) => {
-            let mut headers = list.into_iter();
+            let mut headers = list.iter();
 
             let authority = find_string_param(&mut headers, ":authority")?;
             let path = find_string_param(&mut headers, ":path")?;
@@ -338,7 +338,7 @@ fn validate_param(
 fn is_webtransport_request(
     list: &[h3::Header],
 ) -> std::result::Result<(), ConnectRequestError> {
-    let mut headers = list.into_iter();
+    let mut headers = list.iter();
     validate_param(&mut headers, ":method", "CONNECT")?;
     validate_param(&mut headers, ":protocol", "webtransport")?;
     Ok(())
@@ -370,10 +370,7 @@ impl ServerSession {
 
     /// Returns true if this session has accepted the CONNECT request.
     pub fn is_connected(&self) -> bool {
-        match self.state {
-            ServerState::Connected(_) => true,
-            _ => false,
-        }
+        matches!(self.state, ServerState::Connected(_))
     }
 
     /// Create a new WebTransport session using the provided QUIC connection.
@@ -499,12 +496,7 @@ impl ServerSession {
                 match self.state {
                     ServerState::Connected(sid) => {
                         if sid == session_id {
-                            if !self.streams.contains_key(&stream_id) {
-                                self.streams.insert(
-                                    stream_id,
-                                    StreamInfo::new(stream_id, false),
-                                );
-                            }
+                            self.streams.entry(stream_id).or_insert_with(|| StreamInfo::new(stream_id, false));
                             Ok(ServerEvent::StreamData(stream_id))
                         } else {
                             info!("A WebTransport stream data received, but session_id does't match: {}", session_id);
@@ -704,7 +696,7 @@ impl ServerSession {
                             Err(Error::InvalidStream)
                         } else {
                             let written =
-                                conn.stream_send(stream_id, &data, false)?;
+                                conn.stream_send(stream_id, data, false)?;
                             Ok(written)
                         }
                     },
@@ -754,10 +746,7 @@ impl ClientSession {
 
     /// Returns true if this session got response for CONNECT request with OK status
     pub fn is_connected(&self) -> bool {
-        match self.state {
-            ClientState::Connected(_) => true,
-            _ => false,
-        }
+        matches!(self.state, ClientState::Connected(_))
     }
 
     /// Create a new WebTransport client using the provided QUIC connection.
@@ -794,9 +783,9 @@ impl ClientSession {
             Header::new(b":scheme", b"https"),
             Header::new(b":protocol", b"webtransport"),
             Header::new(b"sec-webtransport-http3-draft02", b"1"),
-            Header::new(b":authority", &authority),
-            Header::new(b":path", &path),
-            Header::new(b"origin", &origin),
+            Header::new(b":authority", authority),
+            Header::new(b":path", path),
+            Header::new(b"origin", origin),
         ];
         if let Some(extra_headers) = extra_headers {
             req.append(&mut extra_headers.to_vec());
@@ -830,7 +819,7 @@ impl ClientSession {
                             let mut headers = list.into_iter();
                             match find_integer_param(&mut headers, ":status") {
                                 Ok(code) => {
-                                    if code >= 200 && code < 300 {
+                                    if (200..300).contains(&code) {
                                         self.state =
                                             ClientState::Connected(stream_id);
                                         Ok(ClientEvent::Connected)
@@ -865,12 +854,7 @@ impl ClientSession {
                 match self.state {
                     ClientState::Connected(sid) => {
                         if sid == session_id {
-                            if !self.streams.contains_key(&stream_id) {
-                                self.streams.insert(
-                                    stream_id,
-                                    StreamInfo::new(stream_id, false),
-                                );
-                            }
+                            self.streams.entry(stream_id).or_insert_with(|| StreamInfo::new(stream_id, false));
                             Ok(ClientEvent::StreamData(stream_id))
                         } else {
                             info!("A WebTransport stream data received, but session_id does't match: {}", session_id);
@@ -1020,7 +1004,7 @@ impl ClientSession {
                                 stream.mark_initialized();
                             }
                             let written =
-                                conn.stream_send(stream_id, &data, false)?;
+                                conn.stream_send(stream_id, data, false)?;
                             Ok(written)
                         }
                     },
