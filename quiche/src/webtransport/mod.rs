@@ -46,17 +46,6 @@ const HTTP_STATUS_BAD_REQUEST: u32 = 400;
 const HTTP_STATUS_TOO_MANY_REQUESTS: u32 = 429;
 const QUIC_CLOSE_REASON_REQUEST_REJECTED: u64 = 0x10B;
 
-/// An error on CONNECT request to establish WebTransport session.
-#[derive(Clone, Debug, PartialEq)]
-enum ConnectRequestError {
-    /// A parameter not found.
-    MissingParam(&'static str),
-    /// A parameter' type or format is wrong.
-    InvalidParam(&'static str, Vec<u8>),
-    /// A parameter doesn't match to expected one.
-    ParamMismatch(&'static str, &'static str, Vec<u8>),
-}
-
 /// An WebTransport error.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Error {
@@ -77,9 +66,6 @@ pub enum Error {
 
     /// The direction or initiater of the specified stream does not match.
     InvalidStream,
-
-    /// The session ID in the datagram was different from the desired one.
-    DatagramSessionIdMismatch,
 
     /// Error originated from the transport layer.
     TransportError(crate::Error),
@@ -122,72 +108,16 @@ impl std::convert::From<crate::Error> for Error {
     }
 }
 
-/// An WebTransport server session event.
+/// An error on CONNECT request to establish WebTransport session.
 #[derive(Clone, Debug, PartialEq)]
-pub enum ServerEvent {
-    /// HTTP headers requesting WebTransport start were received.
-    ConnectRequest(ConnectRequest),
-
-    /// WebTransport stream payload was received
-    StreamData(u64),
-
-    /// WebTransport stream was closed.
-    StreamFinished(u64),
-
-    /// DATAGRAM was received
-    Datagram,
-
-    /// WebTransport session-control-stream was closed.
-    SessionFinished,
-
-    /// WebTransport session-control-stream was reset.
-    SessionReset(u64),
-
-    /// GOAWAY was received on WebTransport session-control-stream.
-    SessionGoAway,
-
-    /// Bypassed events related to HTTP other than WebTransport
-    BypassedHTTPEvent(u64, h3::Event),
+enum ConnectRequestError {
+    /// A parameter not found.
+    MissingParam(&'static str),
+    /// A parameter' type or format is wrong.
+    InvalidParam(&'static str, Vec<u8>),
+    /// A parameter doesn't match to expected one.
+    ParamMismatch(&'static str, &'static str, Vec<u8>),
 }
-
-/// An WebTransport client session event.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ClientEvent {
-    /// response for CONNECT request was received with OK status.
-    Connected,
-
-    /// response for CONNECT request was received with not OK status.
-    Rejected(i32),
-
-    /// WebTransport stream payload was received
-    StreamData(u64),
-
-    /// WebTransport stream was closed.
-    StreamFinished(u64),
-
-    /// DATAGRAM was received
-    Datagram,
-
-    /// WebTransport session-control-stream was closed.
-    SessionFinished,
-
-    /// WebTransport session-control-stream was reset.
-    SessionReset(u64),
-
-    /// GOAWAY was received on WebTransport session-control-stream.
-    SessionGoAway,
-
-    /// Events related to HTTP other than WebTransport
-    BypassedHTTPEvent(u64, h3::Event),
-}
-
-/// A specialized [`Result`] type for quiche WebTransport operations.
-///
-/// This type is used throughout quiche's WebTransport public API for any operation
-/// that can produce an error.
-///
-/// [`Result`]: https://doc.rust-lang.org/std/result/enum.Result.html
-pub type Result<T> = std::result::Result<T, Error>;
 
 /// The main header values that were included in the HTTP request to initiate WebTransport
 #[derive(Clone, Debug, PartialEq)]
@@ -222,6 +152,73 @@ impl ConnectRequest {
         &self.origin
     }
 }
+
+/// An WebTransport server session event.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ServerEvent {
+    /// HTTP headers requesting WebTransport start were received.
+    ConnectRequest(ConnectRequest),
+
+    /// WebTransport stream payload was received
+    StreamData(u64),
+
+    /// WebTransport stream was closed.
+    StreamFinished(u64),
+
+    /// DATAGRAM was received
+    Datagram,
+
+    /// WebTransport session-control-stream was closed.
+    SessionFinished,
+
+    /// WebTransport session-control-stream was reset.
+    SessionReset(u64),
+
+    /// GOAWAY was received on WebTransport session-control-stream.
+    SessionGoAway,
+
+    /// Bypassed events related to HTTP other than WebTransport
+    Other(u64, h3::Event),
+}
+
+/// An WebTransport client session event.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ClientEvent {
+    /// response for CONNECT request was received with OK status.
+    Connected,
+
+    /// response for CONNECT request was received with not OK status.
+    Rejected(i32),
+
+    /// WebTransport stream payload was received
+    StreamData(u64),
+
+    /// WebTransport stream was closed.
+    StreamFinished(u64),
+
+    /// DATAGRAM was received
+    Datagram,
+
+    /// WebTransport session-control-stream was closed.
+    SessionFinished,
+
+    /// WebTransport session-control-stream was reset.
+    SessionReset(u64),
+
+    /// GOAWAY was received on WebTransport session-control-stream.
+    SessionGoAway,
+
+    /// Events related to HTTP other than WebTransport
+    Other(u64, h3::Event),
+}
+
+/// A specialized [`Result`] type for quiche WebTransport operations.
+///
+/// This type is used throughout quiche's WebTransport public API for any operation
+/// that can produce an error.
+///
+/// [`Result`]: https://doc.rust-lang.org/std/result/enum.Result.html
+pub type Result<T> = std::result::Result<T, Error>;
 
 /// Information about WebTransport stream.
 struct StreamInfo {
@@ -381,6 +378,8 @@ impl ServerSession {
     ///
     /// The [`StreamLimit`] error is returned when the HTTP/3 control stream
     /// cannot be created.
+    /// The [`InvalidConfig`] error is returned when the 'dgram_enabled' option is not set as
+    /// enabled.
     pub fn with_transport(conn: &mut Connection) -> Result<Self> {
         if !conn.dgram_enabled() {
             return Err(Error::InvalidConfig("dgram_enabled"));
@@ -418,8 +417,12 @@ impl ServerSession {
     /// Applications should call this method whenever the [`poll()`] method
     /// returns a [`Datagram`] event.
     ///
-    /// On success the DATAGRAM data is returned, with offset wichi represents
-    /// length of the session ID and total length of data.
+    /// If successful, data is packed into the slice passed
+    /// as the argument and a tuple containing three values is returned.
+    ///
+    /// The first is a flag indicating whether this DATAGRAM is tied to the current session.
+    /// The second is an offset value that points to where in the packed data the DATAGRAM payload starts.
+    /// The third is a position that indicates the end of the payload.
     ///
     /// [`Done`] is returned if there is no data to read.
     ///
@@ -432,15 +435,15 @@ impl ServerSession {
     /// [`BufferTooShort`]: ../h3/enum.Error.html#variant.BufferTooShort
     pub fn recv_dgram(
         &mut self, conn: &mut Connection, buf: &mut [u8],
-    ) -> Result<(usize, usize)> {
+    ) -> Result<(bool, usize, usize)> {
         match self.h3_conn.recv_dgram(conn, buf) {
             Ok((len, session_id, session_id_len)) => match self.state {
                 ServerState::Connected(sid) => {
                     if sid == session_id {
-                        Ok((session_id_len, len))
+                        Ok((true, session_id_len, len))
                     } else {
                         info!("The session_id included in Datagram frame doesn't match to current WebTransport session.");
-                        Err(Error::DatagramSessionIdMismatch)
+                        Ok((false, session_id_len, len))
                     }
                 },
                 _ => Err(Error::InvalidState),
@@ -496,17 +499,19 @@ impl ServerSession {
                 match self.state {
                     ServerState::Connected(sid) => {
                         if sid == session_id {
-                            self.streams.entry(stream_id).or_insert_with(|| StreamInfo::new(stream_id, false));
+                            self.streams.entry(stream_id).or_insert_with(|| {
+                                StreamInfo::new(stream_id, false)
+                            });
                             Ok(ServerEvent::StreamData(stream_id))
                         } else {
                             info!("A WebTransport stream data received, but session_id does't match: {}", session_id);
-                            Ok(ServerEvent::BypassedHTTPEvent(
+                            Ok(ServerEvent::Other(
                                 stream_id,
                                 h3::Event::WebTransportStreamData(session_id),
                             ))
                         }
                     },
-                    _ => Ok(ServerEvent::BypassedHTTPEvent(
+                    _ => Ok(ServerEvent::Other(
                         stream_id,
                         h3::Event::WebTransportStreamData(session_id),
                     )),
@@ -514,7 +519,7 @@ impl ServerSession {
             },
 
             Ok((stream_id, h3::Event::Data)) => {
-                Ok(ServerEvent::BypassedHTTPEvent(stream_id, h3::Event::Data))
+                Ok(ServerEvent::Other(stream_id, h3::Event::Data))
             },
 
             Ok((stream_id, h3::Event::Finished)) => {
@@ -528,16 +533,15 @@ impl ServerSession {
                                 Ok(ServerEvent::SessionFinished)
                             } else {
                                 info!("A stream 'finished' event received, but stream_id is unknown: {}", stream_id);
-                                Ok(ServerEvent::BypassedHTTPEvent(
+                                Ok(ServerEvent::Other(
                                     stream_id,
                                     h3::Event::Finished,
                                 ))
                             }
                         },
-                        _ => Ok(ServerEvent::BypassedHTTPEvent(
-                            stream_id,
-                            h3::Event::Finished,
-                        )),
+                        _ => {
+                            Ok(ServerEvent::Other(stream_id, h3::Event::Finished))
+                        },
                     }
                 }
             },
@@ -548,16 +552,10 @@ impl ServerSession {
                         Ok(ServerEvent::SessionReset(e))
                     } else {
                         info!("A stream 'reset' event received, but stream_id is unknown: {}", stream_id);
-                        Ok(ServerEvent::BypassedHTTPEvent(
-                            stream_id,
-                            h3::Event::Reset(e),
-                        ))
+                        Ok(ServerEvent::Other(stream_id, h3::Event::Reset(e)))
                     }
                 },
-                _ => Ok(ServerEvent::BypassedHTTPEvent(
-                    stream_id,
-                    h3::Event::Reset(e),
-                )),
+                _ => Ok(ServerEvent::Other(stream_id, h3::Event::Reset(e))),
             },
 
             Ok((session_id, h3::Event::Datagram)) => match self.state {
@@ -566,16 +564,10 @@ impl ServerSession {
                         Ok(ServerEvent::Datagram)
                     } else {
                         info!("A stream 'datagram' event received, but session_id is unknown: {}", session_id);
-                        Ok(ServerEvent::BypassedHTTPEvent(
-                            session_id,
-                            h3::Event::Datagram,
-                        ))
+                        Ok(ServerEvent::Other(session_id, h3::Event::Datagram))
                     }
                 },
-                _ => Ok(ServerEvent::BypassedHTTPEvent(
-                    session_id,
-                    h3::Event::Datagram,
-                )),
+                _ => Ok(ServerEvent::Other(session_id, h3::Event::Datagram)),
             },
 
             Ok((stream_id, h3::Event::GoAway)) => match self.state {
@@ -584,16 +576,10 @@ impl ServerSession {
                         Ok(ServerEvent::SessionGoAway)
                     } else {
                         info!("A stream 'goaway' event received, but stream_id is unknown: {}", stream_id);
-                        Ok(ServerEvent::BypassedHTTPEvent(
-                            stream_id,
-                            h3::Event::GoAway,
-                        ))
+                        Ok(ServerEvent::Other(stream_id, h3::Event::GoAway))
                     }
                 },
-                _ => Ok(ServerEvent::BypassedHTTPEvent(
-                    stream_id,
-                    h3::Event::GoAway,
-                )),
+                _ => Ok(ServerEvent::Other(stream_id, h3::Event::GoAway)),
             },
 
             Err(h3::Error::Done) => Err(Error::Done),
@@ -602,7 +588,16 @@ impl ServerSession {
         }
     }
 
-    /// accept connect request
+    /// Accepts clients' connect-request.
+    /// After receiving a [`ConnectRequest`] from the client through [`poll()`],
+    /// if you have verified its content and consider it valid,
+    /// you execute this function to establish a WebTransport session.
+    /// It sends a response to the client with a status code of 200.
+    ///
+    /// If there is any additional information you wish to add to the header, pass it in a HashMap.
+    ///
+    /// If this function is called without having received a [`ConnectRequest`] from the client,
+    /// [`InvalidState`] will be returned.
     pub fn accept_connect_request(
         &mut self, conn: &mut Connection, extra_headers: Option<&[Header]>,
     ) -> Result<()> {
@@ -624,7 +619,15 @@ impl ServerSession {
         }
     }
 
-    /// reject connect request
+    /// Reject client's connect-request.
+    ///
+    /// Call this function when you receive a [`ConnectRequest`] from a client through [`poll()`],
+    /// verify its contents, and consider it invalid.
+    /// The argument should be a status code in the 400 range.
+    /// If there is any additional information you wish to add to the header, pass it in a HashMap.
+    ///
+    /// If this function is called without having received a [`ConnectRequest`] from the client,
+    /// [`InvalidState`] will be returned.
     pub fn reject_connect_request(
         &mut self, conn: &mut Connection, code: u32,
         extra_headers: Option<&[Header]>,
@@ -660,7 +663,15 @@ impl ServerSession {
         Ok(())
     }
 
-    /// open new WebTransport stream
+    /// Open a server-initiated WebTransport stream.
+    ///
+    /// The parameters are the raw QUIC connection and a flag indicating
+    /// whether the stream is bidirectional or not.
+    /// This function should call after receiving a [`ConnectRequest``] from
+    /// the client and accepting it with [`accept_connect_request()`].
+    /// Otherwise, an [`InvalidState`] error will be returned.
+    ///
+    /// If successful, the ID of the stream representing new WebTransport Stream is returned.
     pub fn open_stream(
         &mut self, conn: &mut Connection, is_bidi: bool,
     ) -> Result<u64> {
@@ -684,7 +695,19 @@ impl ServerSession {
         }
     }
 
-    /// send WebTransport stream data
+    /// Sends data through a WebTransport stream.
+    ///
+    /// Pass the ID of the corresponding stream and the byte sequence to be sent as arguments.
+    /// If this method is called before the WebTransport session is
+    /// established, an [`InvalidState`] will be returned.
+    /// If you specify an unidirectional stream opened by the peer,
+    /// [`InvalidStream`] will be returned.
+    /// [`StreamNotFound`] is returned if the stream with the specified ID does not exist.
+    ///
+    /// Specify the ID of the bidirectional stream opened by the peer,
+    /// or specify the ID of the stream you opened with [`open_stream()`].
+    ///
+    /// If successful, a number is returned representing the amount of data that could be sent.
     pub fn send_stream_data(
         &mut self, conn: &mut Connection, stream_id: u64, data: &[u8],
     ) -> Result<usize> {
@@ -707,7 +730,12 @@ impl ServerSession {
         }
     }
 
-    /// send WebTransport dgram
+    /// Send DATAGRAM.
+    ///
+    /// You can pass a sequence of bytes that you want to send,
+    /// and it will be converted to the appropriate frame and sent.
+    /// Call this function after the WebTransport session has been established.
+    /// Otherwise, [`InvalidState`] will be returned.
     pub fn send_dgram(
         &mut self, conn: &mut Connection, data: &[u8],
     ) -> Result<()> {
@@ -770,7 +798,12 @@ impl ClientSession {
         Ok(Self::new(h3_conn))
     }
 
-    /// Sends a WebTransport start request.
+    /// Sends a CONNECT request to the server to initiate a WebTransport session.
+    ///
+    /// The authority and path components in the URL are passed as arguments.
+    /// The server information of the calling URL is also passed as the origin argument.
+    /// Additional information can be passed as a HashMap to be included in the header.
+    /// It is called immediately after initialization. Otherwise, [`InvalidState`] is returned.
     pub fn send_connect_request(
         &mut self, conn: &mut Connection, authority: &[u8], path: &[u8],
         origin: &[u8], extra_headers: Option<&[Header]>,
@@ -834,7 +867,7 @@ impl ClientSession {
                             }
                         } else {
                             debug!("Headers event received with unknown stream_id: {}", stream_id);
-                            Ok(ClientEvent::BypassedHTTPEvent(
+                            Ok(ClientEvent::Other(
                                 stream_id,
                                 h3::Event::Headers { list, has_body },
                             ))
@@ -842,7 +875,7 @@ impl ClientSession {
                     },
                     _ => {
                         debug!("Headers event received with stream_id: {}, while not requesting it.", stream_id);
-                        Ok(ClientEvent::BypassedHTTPEvent(
+                        Ok(ClientEvent::Other(
                             stream_id,
                             h3::Event::Headers { list, has_body },
                         ))
@@ -854,17 +887,19 @@ impl ClientSession {
                 match self.state {
                     ClientState::Connected(sid) => {
                         if sid == session_id {
-                            self.streams.entry(stream_id).or_insert_with(|| StreamInfo::new(stream_id, false));
+                            self.streams.entry(stream_id).or_insert_with(|| {
+                                StreamInfo::new(stream_id, false)
+                            });
                             Ok(ClientEvent::StreamData(stream_id))
                         } else {
                             info!("A WebTransport stream data received, but session_id does't match: {}", session_id);
-                            Ok(ClientEvent::BypassedHTTPEvent(
+                            Ok(ClientEvent::Other(
                                 stream_id,
                                 h3::Event::WebTransportStreamData(session_id),
                             ))
                         }
                     },
-                    _ => Ok(ClientEvent::BypassedHTTPEvent(
+                    _ => Ok(ClientEvent::Other(
                         stream_id,
                         h3::Event::WebTransportStreamData(session_id),
                     )),
@@ -872,7 +907,7 @@ impl ClientSession {
             },
 
             Ok((stream_id, h3::Event::Data)) => {
-                Ok(ClientEvent::BypassedHTTPEvent(stream_id, h3::Event::Data))
+                Ok(ClientEvent::Other(stream_id, h3::Event::Data))
             },
 
             Ok((stream_id, h3::Event::Finished)) => {
@@ -886,16 +921,15 @@ impl ClientSession {
                                 Ok(ClientEvent::SessionFinished)
                             } else {
                                 info!("A stream 'finished' event received, but stream_id is unknown: {}", stream_id);
-                                Ok(ClientEvent::BypassedHTTPEvent(
+                                Ok(ClientEvent::Other(
                                     stream_id,
                                     h3::Event::Finished,
                                 ))
                             }
                         },
-                        _ => Ok(ClientEvent::BypassedHTTPEvent(
-                            stream_id,
-                            h3::Event::Finished,
-                        )),
+                        _ => {
+                            Ok(ClientEvent::Other(stream_id, h3::Event::Finished))
+                        },
                     }
                 }
             },
@@ -906,16 +940,10 @@ impl ClientSession {
                         Ok(ClientEvent::SessionReset(e))
                     } else {
                         info!("A stream 'reset' event received, but stream_id is unknown: {}", stream_id);
-                        Ok(ClientEvent::BypassedHTTPEvent(
-                            stream_id,
-                            h3::Event::Reset(e),
-                        ))
+                        Ok(ClientEvent::Other(stream_id, h3::Event::Reset(e)))
                     }
                 },
-                _ => Ok(ClientEvent::BypassedHTTPEvent(
-                    stream_id,
-                    h3::Event::Reset(e),
-                )),
+                _ => Ok(ClientEvent::Other(stream_id, h3::Event::Reset(e))),
             },
 
             Ok((session_id, h3::Event::Datagram)) => match self.state {
@@ -924,16 +952,10 @@ impl ClientSession {
                         Ok(ClientEvent::Datagram)
                     } else {
                         info!("A stream 'datagram' event received, but session_id is unknown: {}", session_id);
-                        Ok(ClientEvent::BypassedHTTPEvent(
-                            session_id,
-                            h3::Event::Datagram,
-                        ))
+                        Ok(ClientEvent::Other(session_id, h3::Event::Datagram))
                     }
                 },
-                _ => Ok(ClientEvent::BypassedHTTPEvent(
-                    session_id,
-                    h3::Event::Datagram,
-                )),
+                _ => Ok(ClientEvent::Other(session_id, h3::Event::Datagram)),
             },
 
             Ok((stream_id, h3::Event::GoAway)) => match self.state {
@@ -942,16 +964,10 @@ impl ClientSession {
                         Ok(ClientEvent::SessionGoAway)
                     } else {
                         info!("A stream 'goaway' event received, but stream_id is unknown: {}", stream_id);
-                        Ok(ClientEvent::BypassedHTTPEvent(
-                            stream_id,
-                            h3::Event::GoAway,
-                        ))
+                        Ok(ClientEvent::Other(stream_id, h3::Event::GoAway))
                     }
                 },
-                _ => Ok(ClientEvent::BypassedHTTPEvent(
-                    stream_id,
-                    h3::Event::GoAway,
-                )),
+                _ => Ok(ClientEvent::Other(stream_id, h3::Event::GoAway)),
             },
 
             Err(h3::Error::Done) => Err(Error::Done),
@@ -959,7 +975,16 @@ impl ClientSession {
             Err(e) => Err(e.into()),
         }
     }
-    /// open new WebTransport stream
+
+    /// Open a client-initiated WebTransport stream.
+    ///
+    /// The parameters are the raw QUIC connection and a flag indicating
+    /// whether the stream is bidirectional or not.
+    /// This function should call after receiving a [`ConnectRequest``] from
+    /// the client and accepting it with [`accept_connect_request()`].
+    /// Otherwise, an [`InvalidState`] error will be returned.
+    ///
+    /// If successful, the ID of the stream representing new WebTransport Stream is returned.
     pub fn open_stream(
         &mut self, conn: &mut Connection, is_bidi: bool,
     ) -> Result<u64> {
@@ -983,7 +1008,19 @@ impl ClientSession {
         }
     }
 
-    /// send WebTransport stream data
+    /// Sends data through a WebTransport stream.
+    ///
+    /// Pass the ID of the corresponding stream and the byte sequence to be sent as arguments.
+    /// If this method is called before the WebTransport session is
+    /// established, an [`InvalidState`] will be returned.
+    /// If you specify an unidirectional stream opened by the peer,
+    /// [`InvalidStream`] will be returned.
+    /// [`StreamNotFound`] is returned if the stream with the specified ID does not exist.
+    ///
+    /// Specify the ID of the bidirectional stream opened by the peer,
+    /// or specify the ID of the stream you opened with [`open_stream()`].
+    ///
+    /// If successful, a number is returned representing the amount of data that could be sent.
     pub fn send_stream_data(
         &mut self, conn: &mut Connection, stream_id: u64, data: &[u8],
     ) -> Result<usize> {
@@ -1039,8 +1076,12 @@ impl ClientSession {
     /// Applications should call this method whenever the [`poll()`] method
     /// returns a [`Datagram`] event.
     ///
-    /// On success the DATAGRAM data is returned, with offset wichi represents
-    /// length of the session ID and total length of data.
+    /// If successful, data is packed into the slice passed
+    /// as the argument and a tuple containing three values is returned.
+    ///
+    /// The first is a flag indicating whether this DATAGRAM is tied to the current session.
+    /// The second is an offset value that points to where in the packed data the DATAGRAM payload starts.
+    /// The third is a position that indicates the end of the payload.
     ///
     /// [`Done`] is returned if there is no data to read.
     ///
@@ -1053,15 +1094,15 @@ impl ClientSession {
     /// [`BufferTooShort`]: ../h3/enum.Error.html#variant.BufferTooShort
     pub fn recv_dgram(
         &mut self, conn: &mut Connection, buf: &mut [u8],
-    ) -> Result<(usize, usize)> {
+    ) -> Result<(bool, usize, usize)> {
         match self.h3_conn.recv_dgram(conn, buf) {
             Ok((len, session_id, session_id_len)) => match self.state {
                 ClientState::Connected(sid) => {
                     if sid == session_id {
-                        Ok((session_id_len, len))
+                        Ok((true, session_id_len, len))
                     } else {
                         info!("The session_id included in Datagram frame doesn't match to current WebTransport session.");
-                        Err(Error::DatagramSessionIdMismatch)
+                        Ok((false, session_id_len, len))
                     }
                 },
                 _ => Err(Error::InvalidState),
@@ -1070,7 +1111,12 @@ impl ClientSession {
         }
     }
 
-    /// send WebTransport dgram
+    /// Send DATAGRAM.
+    ///
+    /// You can pass a sequence of bytes that you want to send,
+    /// and it will be converted to the appropriate frame and sent.
+    /// Call this function after the WebTransport session has been established.
+    /// Otherwise, [`InvalidState`] will be returned.
     pub fn send_dgram(
         &mut self, conn: &mut Connection, data: &[u8],
     ) -> Result<()> {

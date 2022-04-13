@@ -836,7 +836,10 @@ impl Connection {
         Ok(stream_id)
     }
 
-    /// Send FrameType and SessionId for bidirectional WebTransport stream.
+    /// Sends the Frame header information required immediately
+    /// after opening the WebTransport Bidirectional stream.
+    /// The argument is the ID of the corresponding WebTransport stream and
+    /// the ID of the session to which it is attached.
     pub fn send_webtransport_frame_header(
         &mut self, conn: &mut super::Connection, session_id: u64, stream_id: u64,
     ) -> Result<()> {
@@ -849,7 +852,12 @@ impl Connection {
         Ok(())
     }
 
-    /// Open new stream for WebTransport
+    /// Open a new stream in WebTransport.
+    /// Create a stream tied to the session_id specified in the argument.
+    /// The argument also specifies whether it is bidirectional or not.
+    ///
+    /// If successful, the ID of the stream representing
+    /// new WebTransport Stream is returned.
     pub fn open_webtransport_stream(
         &mut self, conn: &mut super::Connection, session_id: u64, bidi: bool,
     ) -> Result<u64> {
