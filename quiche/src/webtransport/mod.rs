@@ -66,6 +66,100 @@
 //! client_session.send_connect_request(&mut conn, b"authority.quic.tech:1234", b"/path", b"origin.quic.tech", None);
 //! # Ok::<(), quiche::webtransport::Error>(())
 //! ```
+//! ## Handling WebTransport events
+//!
+//! After [receiving] QUIC packets, HTTP/3 data is processed using the
+//! connection's [`poll()`] method. On success, this returns an [`Event`] object
+//! and an ID corresponding to the stream where the `Event` originated.
+//!
+//! The management of WebTransport's session_id is managed inside ServerSession, so you don't have to worry about it.
+//!
+//! ```no_run
+//! # let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
+//! # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
+//! # let from = "127.0.0.1:1234".parse().unwrap();
+//! # let mut conn = quiche::accept(&scid, None, from, &mut config).unwrap();
+//! let mut server_session = quiche::webtransport::ServerSession::with_transport(&mut conn)?;
+//! loop {
+//!     match server_session.poll(&mut conn) {
+//!         Ok(quiche::webtransport::ServerEvent::ConnectRequest(req)) => {
+//!             // you can handle request with
+//!             // req.authority()
+//!             // req.path()
+//!             // and you can validate this request with req.origin()
+//!             if req.origin() == "origin.quic.tech" {
+//!                 server_session.accept_connect_request(&mut conn, None);
+//!             } else {
+//!                 server_session.reject_connect_request(&mut conn, 403, None);
+//!             }
+//!         },
+//!
+//!         Ok(quiche::webtransport::ServerEvent::StreamData(stream_id)) => {
+//!             let mut buf = vec![0; 10000];
+//!             while let Ok(len) = server_session.recv_stream_data(&mut conn, stream_id, &mut buf) {
+//!                 let stream_data = &buf[0..len];
+//!                 // handle stream_data
+//!
+//!                 if (stream_id & 0x2) == 0 {
+//!                     // bidirectional stream
+//!                     // you can send data through this stream.
+//!                     server_session.send_stream_data(&mut conn, stream_id, stream_data);
+//!                 } else {
+//!                     // you cannot send data through client-initiated-unidirectional-stream.
+//!                     // so, open new server-initiated-unidirectional-stream, and send data
+//!                     // through it.
+//!                     let new_stream_id = server_session.open_stream(&mut conn, false).unwrap();
+//!                     server_session.send_stream_data(&mut conn, new_stream_id, stream_data);
+//!                 }
+//!             }
+//!         },
+//!
+//!         Ok(quiche::webtransport::ServerEvent::StreamFinished(stream_id)) => {
+//!             // A WebTrnasport stream finished, handle it.
+//!         },
+//!
+//!         Ok(quiche::webtransport::ServerEvent::Datagram) => {
+//!             let mut buf = vec![0; 1500];
+//!             while let Ok((in_session, offset, total)) = server_session.recv_dgram(&mut conn, &mut buf) {
+//!                 if in_session {
+//!                     let dgram = &buf[offset..total];
+//!                     // handle this dgram
+//!
+//!                     // here, echo server for instance.
+//!                     server_session.send_dgram(&mut conn, dgram);
+//!                 } else {
+//!                     // this dgram is not related to current WebTransport session. ignore.
+//!                 }
+//!             }
+//!         },
+//!
+//!         Ok(quiche::webtransport::ServerEvent::SessionReset(e)) => {
+//!             // Peer reset session stream, handle it.
+//!         },
+//!
+//!         Ok(quiche::webtransport::ServerEvent::SessionFinished) => {
+//!             // Peer finish session stream, handle it.
+//!         },
+//!
+//!         Ok(quiche::webtransport::ServerEvent::SessionGoAway) => {
+//!              // Peer signalled it is going away, handle it.
+//!         },
+//!
+//!         Ok(quiche::webtransport::ServerEvent::Other(stream_id, event)) => {
+//              // Original h3::Event which is not related to WebTransport.
+//!         },
+//!
+//!         Err(quiche::webtransport::Error::Done) => {
+//!             break;
+//!         },
+//!
+//!         Err(e) => {
+//!             break;
+//!         },
+//!     }
+//! }
+//! # Ok::<(), quiche::webtransport::Error>(())
+//! ```
 //!
 use crate::h3::{self, Header, NameValue};
 use crate::stream::is_bidi;
