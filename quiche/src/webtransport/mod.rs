@@ -27,12 +27,43 @@
 //! [`with_transport()`] function, the role is inferred from the type of QUIC
 //! connection:
 //!
+//! To create a client session, do the following
+//!
+//! ```no_run
+//! # let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
+//! # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
+//! # let addr = "127.0.0.1:1234".parse().unwrap();
+//! # let mut conn = quiche::connect(Some("quic.tech"), &scid, addr, &mut config)?;
+//! let client_session = quiche::webtransport::ClientSession::with_transport(&mut conn)?;
+//! # Ok::<(), quiche::webtransport::Error>(())
+//! ```
+//!
+//! An example of creating a server session might look like this
+//!
 //! ```no_run
 //! # let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
 //! # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
 //! # let from = "127.0.0.1:1234".parse().unwrap();
 //! # let mut conn = quiche::accept(&scid, None, from, &mut config).unwrap();
-//! let h3_conn = quiche::webtransport::ServerSession::with_transport(&mut conn)?;
+//! let server_session = quiche::webtransport::ServerSession::with_transport(&mut conn)?;
+//! # Ok::<(), quiche::webtransport::Error>(())
+//! ```
+//!
+//! ## Client sends a CONNECT request
+//!
+//! To initiate a session, the client executes the [`send_connect_request()`] function.
+//! Within this function, it sends a HEADERS frame,
+//! adding the header values required by the WebTransport protocol,
+//! in the manner of HTTP/3.
+//!
+//! ```no_run
+//! # let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
+//! # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
+//! # let addr = "127.0.0.1:1234".parse().unwrap();
+//! # let mut conn = quiche::connect(Some("quic.tech"), &scid, addr, &mut config)?;
+//! let mut client_session = quiche::webtransport::ClientSession::with_transport(&mut conn)?;
+//! // After received peer's SETTINGS frame,
+//! client_session.send_connect_request(&mut conn, b"authority.quic.tech:1234", b"/path", b"origin.quic.tech", None);
 //! # Ok::<(), quiche::webtransport::Error>(())
 //! ```
 //!
