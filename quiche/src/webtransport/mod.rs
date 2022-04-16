@@ -468,8 +468,9 @@ impl ServerSession {
         &mut self, conn: &mut Connection, buf: &mut [u8],
     ) -> Result<(bool, usize, usize)> {
         match self.h3_conn.recv_dgram(conn, buf) {
-            Ok((len, session_id, session_id_len)) => match self.state {
+            Ok((len, quarter_session_id, session_id_len)) => match self.state {
                 ServerState::Connected(sid) => {
+                    let session_id = quarter_session_id * 4;
                     if sid == session_id {
                         Ok((true, session_id_len, len))
                     } else {
@@ -772,7 +773,8 @@ impl ServerSession {
     ) -> Result<()> {
         match self.state {
             ServerState::Connected(session_id) => {
-                self.h3_conn.send_dgram(conn, session_id, data)?;
+                let quarter_session_id = session_id / 4;
+                self.h3_conn.send_dgram(conn, quarter_session_id, data)?;
                 Ok(())
             },
             _ => Err(Error::InvalidState),
@@ -1127,8 +1129,9 @@ impl ClientSession {
         &mut self, conn: &mut Connection, buf: &mut [u8],
     ) -> Result<(bool, usize, usize)> {
         match self.h3_conn.recv_dgram(conn, buf) {
-            Ok((len, session_id, session_id_len)) => match self.state {
+            Ok((len, quarter_session_id, session_id_len)) => match self.state {
                 ClientState::Connected(sid) => {
+                    let session_id = quarter_session_id * 4;
                     if sid == session_id {
                         Ok((true, session_id_len, len))
                     } else {
@@ -1153,7 +1156,8 @@ impl ClientSession {
     ) -> Result<()> {
         match self.state {
             ClientState::Connected(session_id) => {
-                self.h3_conn.send_dgram(conn, session_id, data)?;
+                let quarter_session_id = session_id / 4;
+                self.h3_conn.send_dgram(conn, quarter_session_id, data)?;
                 Ok(())
             },
             _ => Err(Error::InvalidState),
