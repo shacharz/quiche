@@ -80,6 +80,14 @@
 //! # let from = "127.0.0.1:1234".parse().unwrap();
 //! # let mut conn = quiche::accept(&scid, None, from, &mut config).unwrap();
 //! let mut server_session = quiche::webtransport::ServerSession::with_transport(&mut conn)?;
+//!
+//! // Before executing the poll, pass the packet received from the UDP socket
+//! // in your application and the sender's address to the recv function of quiche::Connection.
+//!
+//! // let (packet, addr) = received_packet_from_udp_socket();
+//! // conn.recv(packet, quiche::RecvInfo{ from: addr });
+//!
+//! // The poll can then pull out the events that occurred according to the data passed here.
 //! loop {
 //!     match server_session.poll(&mut conn) {
 //!         Ok(quiche::webtransport::ServerEvent::ConnectRequest(req)) => {
@@ -125,7 +133,7 @@
 //!                     let dgram = &buf[offset..total];
 //!                     // handle this dgram
 //!
-//!                     // here, echo server for instance.
+//!                     // for instance, you can write echo-server like following
 //!                     server_session.send_dgram(&mut conn, dgram);
 //!                 } else {
 //!                     // this dgram is not related to current WebTransport session. ignore.
@@ -158,6 +166,25 @@
 //!         },
 //!     }
 //! }
+//!
+//! // After calling the send-related functions of ServerSession,
+//! // the send method of quiche::Connection must be called.
+//! // This allows you to extract the QUIC packets that should be sent
+//! // through the UDP socket.
+//! // You need to write a process to pass this through to the UDP socket.
+//! let mut buf = vec![0; 1500];
+//! loop {
+//!     match conn.send(&mut buf) {
+//!         Ok((len, send_info)) => {
+//!             let packet = &buf[0..len];
+//!             // send this packet to peer through UDP socket.
+//!         },
+//!         Err(quiche::Error::Done) => break,
+//!         Err(e) => break,
+//!     }
+//! }
+//!
+//! //
 //! # Ok::<(), quiche::webtransport::Error>(())
 //! ```
 //!
@@ -309,6 +336,10 @@ pub enum ServerEvent {
 /// An WebTransport client session event.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ClientEvent {
+    /// QUIC handshake is completed, and server's SETTINGS indicates server can accept
+    /// WebTransport.
+    ServerReady,
+
     /// response for CONNECT request was received with OK status.
     Connected,
 
@@ -879,6 +910,7 @@ impl ServerSession {
 #[derive(Clone, Debug, PartialEq)]
 enum ClientState {
     Init,
+    ServerReady,
     Requesting(u64),
     Connected(u64),
 }
@@ -956,12 +988,6 @@ impl ClientSession {
         Ok(stream_id)
     }
 
-    /// Returns true if peer settings is already received and
-    /// it indicates WebTransport is enabled.
-    pub fn is_peer_ready(&self) -> bool {
-        self.h3_conn.webtransport_enabled_by_peer()
-    }
-
     /// Processes WebTransport event received from the peer.
     ///
     /// On success it returns an [`Event`] and an ID, or [`Done`] when there are
@@ -971,6 +997,13 @@ impl ClientSession {
     /// will not be reported again by calling this method again, until the event
     /// is re-armed.
     pub fn poll(&mut self, conn: &mut Connection) -> Result<ClientEvent> {
+        if self.state == ClientState::Init
+            && self.h3_conn.webtransport_enabled_by_peer()
+        {
+            self.state = ClientState::ServerReady;
+            return Ok(ClientEvent::ServerReady);
+        }
+
         match self.h3_conn.poll(conn) {
             Ok((stream_id, h3::Event::Headers { list, has_body })) => {
                 match self.state {
