@@ -68,6 +68,8 @@
 //! ```
 //! ## Handling WebTransport events
 //!
+//! ### Server side
+//!
 //! After [receiving] QUIC packets, HTTP/3 data is processed using the
 //! connection's [`poll()`] method. On success, this returns an [`Event`] object
 //! and an ID corresponding to the stream where the `Event` originated.
@@ -82,12 +84,12 @@
 //! let mut server_session = quiche::webtransport::ServerSession::with_transport(&mut conn)?;
 //!
 //! // Before executing the poll, pass the packet received from the UDP socket
-//! // in your application and the sender's address to the recv function of quiche::Connection.
+//! // in your application and the sender's address to the `recv` function of quiche::Connection.
 //!
 //! // let (packet, addr) = received_packet_from_udp_socket();
 //! // conn.recv(packet, quiche::RecvInfo{ from: addr });
 //!
-//! // The poll can then pull out the events that occurred according to the data passed here.
+//! // The `poll` can pull out the events that occurred according to the data passed here.
 //! loop {
 //!     match server_session.poll(&mut conn) {
 //!         Ok(quiche::webtransport::ServerEvent::ConnectRequest(req)) => {
@@ -185,6 +187,112 @@
 //! }
 //!
 //! //
+//! # Ok::<(), quiche::webtransport::Error>(())
+//! ```
+//!
+//! ### Client side
+//!
+//! ```no_run
+//! # let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
+//! # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
+//! # let addr = "127.0.0.1:1234".parse().unwrap();
+//! # let mut conn = quiche::connect(Some("quic.tech"), &scid, addr, &mut config)?;
+//! let mut client_session = quiche::webtransport::ClientSession::with_transport(&mut conn)?;
+//!
+//! // Before executing the poll, pass the packet received from the UDP socket
+//! // in your application and the sender's address to the `recv` function of quiche::Connection.
+//!
+//! // let (packet, addr) = received_packet_from_udp_socket();
+//! // conn.recv(packet, quiche::RecvInfo{ from: addr });
+//!
+//! // The `poll` can pull out the events that occurred according to the data passed here.
+//!
+//! loop {
+//!     match client_session.poll(&mut conn) {
+//!         Ok(quiche::webtransport::ClientEvent::ServerReady) => {
+//!             // This event is issued when a SETTINGS frame from the server is received and
+//!             // it detects that WebTransport is enabled.
+//!             client_session.send_connect_request(&mut conn,
+//!                 b"authority.quic.tech:1234",
+//!                 b"/path",
+//!                 b"origin.quic.tech",
+//!                 None);
+//!         },
+//!         Ok(quiche::webtransport::ClientEvent::Connected) => {
+//!             // receive response from server for CONNECT request,
+//!             // and it indicates server accepted it.
+//!             // you can start to send any data through Stream or send Datagram
+//!         },
+//!         Ok(quiche::webtransport::ClientEvent::Rejected(code)) => {
+//!             // receive response from server for CONNECT request,
+//!             // and it indicates server rejected it.
+//!             // you may want to close session.
+//!         },
+//!         Ok(quiche::webtransport::ClientEvent::StreamData(stream_id)) => {
+//!             let mut buf = vec![0; 10000];
+//!             while let Ok(len) = client_session.recv_stream_data(&mut conn, stream_id, &mut buf) {
+//!                 let stream_data = &buf[0..len];
+//!                 //handle_stream_data(stream_data);
+//!             }
+//!
+//!         },
+//!         Ok(quiche::webtransport::ClientEvent::Datagram) => {
+//!             let mut buf = vec![0; 1500];
+//!             while let Ok((in_session, offset, total)) = client_session.recv_dgram(&mut conn, &mut buf) {
+//!                 if in_session {
+//!                     let dgram = &buf[offset..total];
+//!                     // handle_dgram(dgram);
+//!                 } else {
+//!                     // this dgram is not related to current WebTransport session. ignore.
+//!                 }
+//!             }
+//!         },
+//!         Ok(quiche::webtransport::ClientEvent::StreamFinished(stream_id)) => {
+//!             // A WebTrnasport stream finished, handle it.
+//!         },
+//!         Ok(quiche::webtransport::ClientEvent::SessionFinished) => {
+//!             // Peer finish session stream, handle it.
+//!         },
+//!         Ok(quiche::webtransport::ClientEvent::SessionReset(e)) => {
+//!             // Peer reset session stream, handle it.
+//!         },
+//!         Ok(quiche::webtransport::ClientEvent::SessionGoAway) => {
+//!              // Peer signalled it is going away, handle it.
+//!         },
+//!         Ok(quiche::webtransport::ClientEvent::Other(stream_id, event)) => {
+//              // Original h3::Event which is not related to WebTransport.
+//!         },
+//!         Err(quiche::webtransport::Error::Done) => break,
+//!         Err(e) => break,
+//!     }
+//! }
+//!
+//! let mut data_to_be_sent = vec![1; 500];
+//!
+//! let bidi_stream_id = client_session.open_stream(&mut conn, true)?;
+//! client_session.send_stream_data(&mut conn, bidi_stream_id, &data_to_be_sent)?;
+//!
+//! let uni_stream_id = client_session.open_stream(&mut conn, false)?;
+//! client_session.send_stream_data(&mut conn, uni_stream_id, &data_to_be_sent)?;
+//!
+//! client_session.send_dgram(&mut conn, &data_to_be_sent)?;
+//!
+//! // After calling the send-related functions of ClientSession,
+//! // the send method of quiche::Connection must be called.
+//! // This allows you to extract the QUIC packets that should be sent
+//! // through the UDP socket.
+//! // You need to write a process to pass this through to the UDP socket.
+//! let mut buf = vec![0; 1500];
+//! loop {
+//!     match conn.send(&mut buf) {
+//!         Ok((len, send_info)) => {
+//!             let packet = &buf[0..len];
+//!             // send this packet to peer through UDP socket.
+//!         },
+//!         Err(quiche::Error::Done) => break,
+//!         Err(e) => break,
+//!     }
+//! }
 //! # Ok::<(), quiche::webtransport::Error>(())
 //! ```
 //!
