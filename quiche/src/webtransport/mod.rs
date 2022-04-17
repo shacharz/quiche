@@ -967,7 +967,7 @@ impl ClientSession {
         &mut self, conn: &mut Connection, authority: &[u8], path: &[u8],
         origin: &[u8], extra_headers: Option<&[Header]>,
     ) -> Result<u64> {
-        if self.state != ClientState::Init {
+        if self.state != ClientState::ServerReady {
             return Err(Error::InvalidState);
         }
         let mut req = vec![
