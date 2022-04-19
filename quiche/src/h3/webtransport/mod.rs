@@ -34,8 +34,8 @@
 //! # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
 //! # let addr = "127.0.0.1:1234".parse().unwrap();
 //! # let mut conn = quiche::connect(Some("quic.tech"), &scid, addr, &mut config)?;
-//! let client_session = quiche::webtransport::ClientSession::with_transport(&mut conn)?;
-//! # Ok::<(), quiche::webtransport::Error>(())
+//! let client_session = quiche::h3::webtransport::ClientSession::with_transport(&mut conn)?;
+//! # Ok::<(), quiche::h3::webtransport::Error>(())
 //! ```
 //!
 //! An example of creating a server session might look like this
@@ -45,8 +45,8 @@
 //! # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
 //! # let from = "127.0.0.1:1234".parse().unwrap();
 //! # let mut conn = quiche::accept(&scid, None, from, &mut config).unwrap();
-//! let server_session = quiche::webtransport::ServerSession::with_transport(&mut conn)?;
-//! # Ok::<(), quiche::webtransport::Error>(())
+//! let server_session = quiche::h3::webtransport::ServerSession::with_transport(&mut conn)?;
+//! # Ok::<(), quiche::h3::webtransport::Error>(())
 //! ```
 //!
 //! ## Client sends a CONNECT request
@@ -61,10 +61,10 @@
 //! # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
 //! # let addr = "127.0.0.1:1234".parse().unwrap();
 //! # let mut conn = quiche::connect(Some("quic.tech"), &scid, addr, &mut config)?;
-//! let mut client_session = quiche::webtransport::ClientSession::with_transport(&mut conn)?;
+//! let mut client_session = quiche::h3::webtransport::ClientSession::with_transport(&mut conn)?;
 //! // After received peer's SETTINGS frame,
 //! client_session.send_connect_request(&mut conn, b"authority.quic.tech:1234", b"/path", b"origin.quic.tech", None);
-//! # Ok::<(), quiche::webtransport::Error>(())
+//! # Ok::<(), quiche::h3::webtransport::Error>(())
 //! ```
 //! ## Handling WebTransport events
 //!
@@ -81,7 +81,7 @@
 //! # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
 //! # let from = "127.0.0.1:1234".parse().unwrap();
 //! # let mut conn = quiche::accept(&scid, None, from, &mut config).unwrap();
-//! let mut server_session = quiche::webtransport::ServerSession::with_transport(&mut conn)?;
+//! let mut server_session = quiche::h3::webtransport::ServerSession::with_transport(&mut conn)?;
 //!
 //! // Before executing the poll, pass the packet received from the UDP socket
 //! // in your application and the sender's address to the `recv` function of quiche::Connection.
@@ -92,7 +92,7 @@
 //! // The `poll` can pull out the events that occurred according to the data passed here.
 //! loop {
 //!     match server_session.poll(&mut conn) {
-//!         Ok(quiche::webtransport::ServerEvent::ConnectRequest(req)) => {
+//!         Ok(quiche::h3::webtransport::ServerEvent::ConnectRequest(req)) => {
 //!             // you can handle request with
 //!             // req.authority()
 //!             // req.path()
@@ -104,7 +104,7 @@
 //!             }
 //!         },
 //!
-//!         Ok(quiche::webtransport::ServerEvent::StreamData(stream_id)) => {
+//!         Ok(quiche::h3::webtransport::ServerEvent::StreamData(stream_id)) => {
 //!             let mut buf = vec![0; 10000];
 //!             while let Ok(len) = server_session.recv_stream_data(&mut conn, stream_id, &mut buf) {
 //!                 let stream_data = &buf[0..len];
@@ -124,11 +124,11 @@
 //!             }
 //!         },
 //!
-//!         Ok(quiche::webtransport::ServerEvent::StreamFinished(stream_id)) => {
+//!         Ok(quiche::h3::webtransport::ServerEvent::StreamFinished(stream_id)) => {
 //!             // A WebTrnasport stream finished, handle it.
 //!         },
 //!
-//!         Ok(quiche::webtransport::ServerEvent::Datagram) => {
+//!         Ok(quiche::h3::webtransport::ServerEvent::Datagram) => {
 //!             let mut buf = vec![0; 1500];
 //!             while let Ok((in_session, offset, total)) = server_session.recv_dgram(&mut conn, &mut buf) {
 //!                 if in_session {
@@ -143,23 +143,23 @@
 //!             }
 //!         },
 //!
-//!         Ok(quiche::webtransport::ServerEvent::SessionReset(e)) => {
+//!         Ok(quiche::h3::webtransport::ServerEvent::SessionReset(e)) => {
 //!             // Peer reset session stream, handle it.
 //!         },
 //!
-//!         Ok(quiche::webtransport::ServerEvent::SessionFinished) => {
+//!         Ok(quiche::h3::webtransport::ServerEvent::SessionFinished) => {
 //!             // Peer finish session stream, handle it.
 //!         },
 //!
-//!         Ok(quiche::webtransport::ServerEvent::SessionGoAway) => {
+//!         Ok(quiche::h3::webtransport::ServerEvent::SessionGoAway) => {
 //!              // Peer signalled it is going away, handle it.
 //!         },
 //!
-//!         Ok(quiche::webtransport::ServerEvent::Other(stream_id, event)) => {
+//!         Ok(quiche::h3::webtransport::ServerEvent::Other(stream_id, event)) => {
 //              // Original h3::Event which is not related to WebTransport.
 //!         },
 //!
-//!         Err(quiche::webtransport::Error::Done) => {
+//!         Err(quiche::h3::webtransport::Error::Done) => {
 //!             break;
 //!         },
 //!
@@ -187,7 +187,7 @@
 //! }
 //!
 //! //
-//! # Ok::<(), quiche::webtransport::Error>(())
+//! # Ok::<(), quiche::h3::webtransport::Error>(())
 //! ```
 //!
 //! ### Client side
@@ -197,7 +197,7 @@
 //! # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
 //! # let addr = "127.0.0.1:1234".parse().unwrap();
 //! # let mut conn = quiche::connect(Some("quic.tech"), &scid, addr, &mut config)?;
-//! let mut client_session = quiche::webtransport::ClientSession::with_transport(&mut conn)?;
+//! let mut client_session = quiche::h3::webtransport::ClientSession::with_transport(&mut conn)?;
 //!
 //! // Before executing the poll, pass the packet received from the UDP socket
 //! // in your application and the sender's address to the `recv` function of quiche::Connection.
@@ -209,7 +209,7 @@
 //!
 //! loop {
 //!     match client_session.poll(&mut conn) {
-//!         Ok(quiche::webtransport::ClientEvent::ServerReady) => {
+//!         Ok(quiche::h3::webtransport::ClientEvent::ServerReady) => {
 //!             // This event is issued when a SETTINGS frame from the server is received and
 //!             // it detects that WebTransport is enabled.
 //!             client_session.send_connect_request(&mut conn,
@@ -218,17 +218,17 @@
 //!                 b"origin.quic.tech",
 //!                 None);
 //!         },
-//!         Ok(quiche::webtransport::ClientEvent::Connected) => {
+//!         Ok(quiche::h3::webtransport::ClientEvent::Connected) => {
 //!             // receive response from server for CONNECT request,
 //!             // and it indicates server accepted it.
 //!             // you can start to send any data through Stream or send Datagram
 //!         },
-//!         Ok(quiche::webtransport::ClientEvent::Rejected(code)) => {
+//!         Ok(quiche::h3::webtransport::ClientEvent::Rejected(code)) => {
 //!             // receive response from server for CONNECT request,
 //!             // and it indicates server rejected it.
 //!             // you may want to close session.
 //!         },
-//!         Ok(quiche::webtransport::ClientEvent::StreamData(stream_id)) => {
+//!         Ok(quiche::h3::webtransport::ClientEvent::StreamData(stream_id)) => {
 //!             let mut buf = vec![0; 10000];
 //!             while let Ok(len) = client_session.recv_stream_data(&mut conn, stream_id, &mut buf) {
 //!                 let stream_data = &buf[0..len];
@@ -236,7 +236,7 @@
 //!             }
 //!
 //!         },
-//!         Ok(quiche::webtransport::ClientEvent::Datagram) => {
+//!         Ok(quiche::h3::webtransport::ClientEvent::Datagram) => {
 //!             let mut buf = vec![0; 1500];
 //!             while let Ok((in_session, offset, total)) = client_session.recv_dgram(&mut conn, &mut buf) {
 //!                 if in_session {
@@ -247,22 +247,22 @@
 //!                 }
 //!             }
 //!         },
-//!         Ok(quiche::webtransport::ClientEvent::StreamFinished(stream_id)) => {
+//!         Ok(quiche::h3::webtransport::ClientEvent::StreamFinished(stream_id)) => {
 //!             // A WebTrnasport stream finished, handle it.
 //!         },
-//!         Ok(quiche::webtransport::ClientEvent::SessionFinished) => {
+//!         Ok(quiche::h3::webtransport::ClientEvent::SessionFinished) => {
 //!             // Peer finish session stream, handle it.
 //!         },
-//!         Ok(quiche::webtransport::ClientEvent::SessionReset(e)) => {
+//!         Ok(quiche::h3::webtransport::ClientEvent::SessionReset(e)) => {
 //!             // Peer reset session stream, handle it.
 //!         },
-//!         Ok(quiche::webtransport::ClientEvent::SessionGoAway) => {
+//!         Ok(quiche::h3::webtransport::ClientEvent::SessionGoAway) => {
 //!              // Peer signalled it is going away, handle it.
 //!         },
-//!         Ok(quiche::webtransport::ClientEvent::Other(stream_id, event)) => {
+//!         Ok(quiche::h3::webtransport::ClientEvent::Other(stream_id, event)) => {
 //              // Original h3::Event which is not related to WebTransport.
 //!         },
-//!         Err(quiche::webtransport::Error::Done) => break,
+//!         Err(quiche::h3::webtransport::Error::Done) => break,
 //!         Err(e) => break,
 //!     }
 //! }
@@ -293,7 +293,7 @@
 //!         Err(e) => break,
 //!     }
 //! }
-//! # Ok::<(), quiche::webtransport::Error>(())
+//! # Ok::<(), quiche::h3::webtransport::Error>(())
 //! ```
 //!
 use crate::h3::{self, Header, NameValue};
@@ -304,7 +304,9 @@ use std::str;
 
 const HTTP_STATUS_BAD_REQUEST: u32 = 400;
 const HTTP_STATUS_TOO_MANY_REQUESTS: u32 = 429;
-const QUIC_CLOSE_REASON_REQUEST_REJECTED: u64 = 0x10B;
+
+/// If you want to reject the CONNECT request and then disconnect QUIC, use this code as the reason.
+pub const QUIC_CLOSE_REASON_REQUEST_REJECTED: u64 = 0x10B;
 
 /// An WebTransport error.
 #[derive(Clone, Debug, PartialEq)]
@@ -488,17 +490,12 @@ pub type Result<T> = std::result::Result<T, Error>;
 struct StreamInfo {
     stream_id: u64,
     local: bool,
-    initialized: bool,
 }
 
 impl StreamInfo {
     /// Create a new stream info
     pub fn new(stream_id: u64, local: bool) -> Self {
-        Self {
-            stream_id,
-            local,
-            initialized: false,
-        }
+        Self { stream_id, local }
     }
 
     /// Returns true if the stream is bidirectional.
@@ -506,19 +503,9 @@ impl StreamInfo {
         is_bidi(self.stream_id)
     }
 
-    /// Returns true if it is already marked as initialized.
-    pub fn is_initialized(&self) -> bool {
-        self.initialized
-    }
-
     /// Returns true if the stream was created locally.
     pub fn is_local(&self) -> bool {
         self.local
-    }
-
-    /// Mark as initialized. This method should be called after send required data before payload.
-    pub fn mark_initialized(&mut self) {
-        self.initialized = true;
     }
 }
 
@@ -741,7 +728,7 @@ impl ServerSession {
                                 HTTP_STATUS_TOO_MANY_REQUESTS,
                                 None,
                             );
-                            Err(Error::Done)
+                            Err(Error::UnexpectedMessage)
                         }
                     },
                     Err(e) => {
@@ -755,7 +742,7 @@ impl ServerSession {
                             HTTP_STATUS_BAD_REQUEST,
                             None,
                         );
-                        Err(Error::Done)
+                        Err(Error::UnexpectedMessage)
                     },
                 }
             },
@@ -899,7 +886,8 @@ impl ServerSession {
     ) -> Result<()> {
         match self.state {
             ServerState::Requested(session_id) => {
-                self.reject_internal(conn, session_id, code, extra_headers)
+                self.reject_internal(conn, session_id, code, extra_headers)?;
+                Ok(())
             },
             _ => Err(Error::InvalidState),
         }
@@ -924,7 +912,6 @@ impl ServerSession {
             warn!("Failed to send WebTransport reject response: {}", e);
         }
         self.state = ServerState::Finished;
-        conn.close(true, QUIC_CLOSE_REASON_REQUEST_REJECTED, b"")?;
         Ok(())
     }
 
@@ -947,8 +934,7 @@ impl ServerSession {
                     .open_webtransport_stream(conn, session_id, is_bidi)
                 {
                     Ok(stream_id) => {
-                        let mut stream = StreamInfo::new(stream_id, true);
-                        stream.mark_initialized();
+                        let stream = StreamInfo::new(stream_id, true);
                         self.streams.insert(stream_id, stream);
                         Ok(stream_id)
                     },
@@ -1263,8 +1249,7 @@ impl ClientSession {
                     .open_webtransport_stream(conn, session_id, is_bidi)
                 {
                     Ok(stream_id) => {
-                        let mut stream = StreamInfo::new(stream_id, true);
-                        stream.mark_initialized();
+                        let stream = StreamInfo::new(stream_id, true);
                         self.streams.insert(stream_id, stream);
                         Ok(stream_id)
                     },
@@ -1293,21 +1278,12 @@ impl ClientSession {
         &mut self, conn: &mut Connection, stream_id: u64, data: &[u8],
     ) -> Result<usize> {
         match self.state {
-            ClientState::Connected(session_id) => {
+            ClientState::Connected(_session_id) => {
                 match self.streams.get_mut(&stream_id) {
                     Some(stream) => {
                         if !stream.is_bidi() && !stream.is_local() {
                             Err(Error::InvalidStream)
                         } else {
-                            if stream.is_bidi()
-                                && !stream.is_local()
-                                && !stream.is_initialized()
-                            {
-                                self.h3_conn.send_webtransport_frame_header(
-                                    conn, session_id, stream_id,
-                                )?;
-                                stream.mark_initialized();
-                            }
                             let written =
                                 conn.stream_send(stream_id, data, false)?;
                             Ok(written)
@@ -1397,5 +1373,517 @@ impl ClientSession {
             },
             _ => Err(Error::InvalidState),
         }
+    }
+}
+
+#[doc(hidden)]
+pub mod testing {
+    use super::*;
+    use crate::testing;
+
+    pub struct Session {
+        pub pipe: testing::Pipe,
+        pub client: ClientSession,
+        pub server: ServerSession,
+    }
+
+    impl Session {
+        pub fn default() -> Result<Session> {
+            let mut config = crate::Config::new(crate::PROTOCOL_VERSION)?;
+            config.load_cert_chain_from_pem_file("examples/cert.crt")?;
+            config.load_priv_key_from_pem_file("examples/cert.key")?;
+            config.set_application_protos(b"\x02h3")?;
+            config.set_initial_max_data(1500);
+            config.set_initial_max_stream_data_bidi_local(150);
+            config.set_initial_max_stream_data_bidi_remote(150);
+            config.set_initial_max_stream_data_uni(150);
+            config.set_initial_max_streams_bidi(5);
+            config.set_initial_max_streams_uni(5);
+            config.verify_peer(false);
+            config.enable_dgram(true, 3, 3);
+            config.set_ack_delay_exponent(8);
+
+            let mut h3_config = crate::h3::Config::new()?;
+            h3_config.set_enable_webtransport(true);
+            Session::with_configs(&mut config, &h3_config)
+        }
+
+        pub fn with_configs(
+            config: &mut crate::Config, h3_config: &crate::h3::Config,
+        ) -> Result<Session> {
+            let pipe = testing::Pipe::with_config(config)?;
+            let client_dgram = pipe.client.dgram_enabled();
+            let server_dgram = pipe.server.dgram_enabled();
+            let client_conn =
+                crate::h3::Connection::new(h3_config, false, client_dgram)?;
+            let server_conn =
+                crate::h3::Connection::new(h3_config, true, server_dgram)?;
+            Ok(Session {
+                pipe,
+                client: ClientSession::new(client_conn),
+                server: ServerSession::new(server_conn),
+            })
+        }
+
+        pub fn handshake(&mut self) -> Result<()> {
+            self.pipe.handshake()?;
+
+            // Client streams.
+            self.client.h3_conn.send_settings(&mut self.pipe.client)?;
+            self.pipe.advance().ok();
+
+            self.client
+                .h3_conn
+                .open_qpack_encoder_stream(&mut self.pipe.client)?;
+            self.pipe.advance().ok();
+
+            self.client
+                .h3_conn
+                .open_qpack_decoder_stream(&mut self.pipe.client)?;
+            self.pipe.advance().ok();
+
+            if self.pipe.client.grease {
+                self.client
+                    .h3_conn
+                    .open_grease_stream(&mut self.pipe.client)?;
+            }
+
+            self.pipe.advance().ok();
+
+            // Server streams.
+            self.server.h3_conn.send_settings(&mut self.pipe.server)?;
+            self.pipe.advance().ok();
+
+            self.server
+                .h3_conn
+                .open_qpack_encoder_stream(&mut self.pipe.server)?;
+            self.pipe.advance().ok();
+
+            self.server
+                .h3_conn
+                .open_qpack_decoder_stream(&mut self.pipe.server)?;
+            self.pipe.advance().ok();
+
+            if self.pipe.server.grease {
+                self.server
+                    .h3_conn
+                    .open_grease_stream(&mut self.pipe.server)?;
+            }
+
+            self.advance().ok();
+
+            while self.client.poll(&mut self.pipe.client).is_ok() {
+                // Do nothing.
+            }
+
+            while self.server.poll(&mut self.pipe.server).is_ok() {
+                // Do nothing.
+            }
+
+            Ok(())
+        }
+
+        /// Advances the session pipe over the buffer.
+        pub fn advance(&mut self) -> crate::Result<()> {
+            self.pipe.advance()
+        }
+
+        /// Polls the client for events.
+        pub fn poll_client(&mut self) -> Result<ClientEvent> {
+            self.client.poll(&mut self.pipe.client)
+        }
+
+        /// Polls the server for events.
+        pub fn poll_server(&mut self) -> Result<ServerEvent> {
+            self.server.poll(&mut self.pipe.server)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::*;
+    use super::*;
+
+    fn complete_webtransport_handshake() -> testing::Session {
+        let mut s = Session::default().unwrap();
+        s.handshake().unwrap();
+
+        // To make sure that server supports WebTransport,
+        // wait server's SETTING frame including enable_webtransport flag.
+        assert_eq!(s.poll_client(), Ok(ClientEvent::ServerReady));
+        assert_eq!(s.poll_client(), Err(Error::Done));
+
+        let _ = s
+            .client
+            .send_connect_request(
+                &mut s.pipe.client,
+                b"authority.quic.tech:1234",
+                b"/path",
+                b"origin.quic.tech",
+                None,
+            )
+            .unwrap();
+
+        s.advance().ok();
+
+        let req = ConnectRequest::new(
+            "authority.quic.tech:1234".to_string(),
+            "/path".to_string(),
+            "origin.quic.tech".to_string(),
+        );
+
+        assert_eq!(s.poll_server(), Ok(ServerEvent::ConnectRequest(req)));
+        assert_eq!(s.poll_server(), Err(Error::Done));
+
+        s.server
+            .accept_connect_request(&mut s.pipe.server, None)
+            .ok();
+
+        s.advance().ok();
+
+        assert_eq!(s.poll_client(), Ok(ClientEvent::Connected));
+        assert_eq!(s.poll_client(), Err(Error::Done));
+
+        s
+    }
+
+    #[test]
+    fn accept_connect_request() {
+        complete_webtransport_handshake();
+    }
+
+    #[test]
+    fn reject_connect_request() {
+        let mut s = Session::default().unwrap();
+        s.handshake().unwrap();
+
+        // To make sure that server supports WebTransport,
+        // wait server's SETTING frame including enable_webtransport flag.
+        assert_eq!(s.poll_client(), Ok(ClientEvent::ServerReady));
+        assert_eq!(s.poll_client(), Err(Error::Done));
+
+        let _session_id = s
+            .client
+            .send_connect_request(
+                &mut s.pipe.client,
+                b"authority.quic.tech:1234",
+                b"/path",
+                b"origin.quic.tech",
+                None,
+            )
+            .unwrap();
+
+        s.advance().ok();
+
+        let req = ConnectRequest::new(
+            "authority.quic.tech:1234".to_string(),
+            "/path".to_string(),
+            "origin.quic.tech".to_string(),
+        );
+
+        assert_eq!(s.poll_server(), Ok(ServerEvent::ConnectRequest(req)));
+        assert_eq!(s.poll_server(), Err(Error::Done));
+
+        s.server
+            .reject_connect_request(&mut s.pipe.server, 401, None)
+            .ok();
+
+        s.advance().ok();
+
+        assert_eq!(s.poll_client(), Ok(ClientEvent::Rejected(401)));
+        assert_eq!(s.poll_client(), Ok(ClientEvent::SessionFinished));
+        assert_eq!(s.poll_client(), Err(Error::Done));
+    }
+
+    #[test]
+    fn unidirectional_stream() {
+        let mut s = complete_webtransport_handshake();
+
+        let initial_client_uni_stream = 18;
+
+        // client open uni-directional stream
+        assert_eq!(
+            s.client.open_stream(&mut s.pipe.client, false),
+            Ok(initial_client_uni_stream)
+        );
+        // and send data through the stream
+        let data_to_be_sent = b"Hello, WebTransport";
+
+        s.client
+            .send_stream_data(
+                &mut s.pipe.client,
+                initial_client_uni_stream,
+                data_to_be_sent,
+            )
+            .ok();
+
+        s.advance().ok();
+
+        assert_eq!(
+            s.poll_server(),
+            Ok(ServerEvent::StreamData(initial_client_uni_stream))
+        );
+
+        let mut buf = vec![0; 1000];
+        assert_eq!(
+            s.server.recv_stream_data(
+                &mut s.pipe.server,
+                initial_client_uni_stream,
+                &mut buf
+            ),
+            Ok(19)
+        );
+        assert_eq!(data_to_be_sent, &buf[0..19]);
+
+        assert_eq!(s.poll_server(), Err(Error::Done));
+
+        // server cant send data through client-initiated uni-stream.
+        assert_eq!(
+            s.server.send_stream_data(
+                &mut s.pipe.server,
+                initial_client_uni_stream,
+                data_to_be_sent
+            ),
+            Err(Error::InvalidStream)
+        );
+
+        let initial_server_uni_stream = 19;
+
+        assert_eq!(
+            s.server.open_stream(&mut s.pipe.server, false),
+            Ok(initial_server_uni_stream)
+        );
+
+        s.server
+            .send_stream_data(
+                &mut s.pipe.server,
+                initial_server_uni_stream,
+                data_to_be_sent,
+            )
+            .ok();
+
+        s.advance().ok();
+
+        assert_eq!(
+            s.poll_client(),
+            Ok(ClientEvent::StreamData(initial_server_uni_stream))
+        );
+
+        assert_eq!(
+            s.client.recv_stream_data(
+                &mut s.pipe.client,
+                initial_server_uni_stream,
+                &mut buf
+            ),
+            Ok(19)
+        );
+
+        assert_eq!(data_to_be_sent, &buf[0..19]);
+
+        assert_eq!(s.poll_client(), Err(Error::Done));
+
+        // client cant send data through server-initiated uni-stream.
+        assert_eq!(
+            s.client.send_stream_data(
+                &mut s.pipe.client,
+                initial_server_uni_stream,
+                data_to_be_sent,
+            ),
+            Err(Error::InvalidStream)
+        );
+    }
+
+    #[test]
+    fn client_initiated_bidirectional_stream() {
+        let mut s = complete_webtransport_handshake();
+
+        let initial_client_bidi_stream = 4;
+
+        // client open uni-directional stream
+        assert_eq!(
+            s.client.open_stream(&mut s.pipe.client, true),
+            Ok(initial_client_bidi_stream)
+        );
+
+        let data_to_be_sent = b"Hello, WebTransport from client";
+
+        s.client
+            .send_stream_data(
+                &mut s.pipe.client,
+                initial_client_bidi_stream,
+                data_to_be_sent,
+            )
+            .ok();
+
+        s.advance().ok();
+
+        assert_eq!(
+            s.poll_server(),
+            Ok(ServerEvent::StreamData(initial_client_bidi_stream))
+        );
+
+        let mut buf = vec![0; 1000];
+        assert_eq!(
+            s.server.recv_stream_data(
+                &mut s.pipe.server,
+                initial_client_bidi_stream,
+                &mut buf
+            ),
+            Ok(31)
+        );
+        assert_eq!(data_to_be_sent, &buf[0..31]);
+
+        assert_eq!(s.poll_server(), Err(Error::Done));
+
+        let data_to_be_sent = b"Hello, WebTransport from server";
+
+        // server can send data through client-initiated bidi-stream.
+        s.server
+            .send_stream_data(
+                &mut s.pipe.server,
+                initial_client_bidi_stream,
+                data_to_be_sent,
+            )
+            .ok();
+
+        s.advance().ok();
+
+        assert_eq!(
+            s.poll_client(),
+            Ok(ClientEvent::StreamData(initial_client_bidi_stream))
+        );
+
+        assert_eq!(
+            s.client.recv_stream_data(
+                &mut s.pipe.client,
+                initial_client_bidi_stream,
+                &mut buf
+            ),
+            Ok(31)
+        );
+
+        assert_eq!(data_to_be_sent, &buf[0..31]);
+
+        assert_eq!(s.poll_client(), Err(Error::Done));
+    }
+
+    #[test]
+    fn server_initiated_bidirectional_stream() {
+        let mut s = complete_webtransport_handshake();
+
+        let initial_server_bidi_stream = 1;
+
+        // client open uni-directional stream
+        assert_eq!(
+            s.server.open_stream(&mut s.pipe.server, true),
+            Ok(initial_server_bidi_stream)
+        );
+
+        let data_to_be_sent = b"Hello, WebTransport from server";
+
+        s.server
+            .send_stream_data(
+                &mut s.pipe.server,
+                initial_server_bidi_stream,
+                data_to_be_sent,
+            )
+            .ok();
+
+        s.advance().ok();
+
+        assert_eq!(
+            s.poll_client(),
+            Ok(ClientEvent::StreamData(initial_server_bidi_stream))
+        );
+
+        let mut buf = vec![0; 1000];
+        assert_eq!(
+            s.client.recv_stream_data(
+                &mut s.pipe.client,
+                initial_server_bidi_stream,
+                &mut buf
+            ),
+            Ok(31)
+        );
+        assert_eq!(data_to_be_sent, &buf[0..31]);
+
+        assert_eq!(s.poll_client(), Err(Error::Done));
+
+        let data_to_be_sent = b"Hello, WebTransport from client";
+
+        // server can send data through client-initiated bidi-stream.
+        s.client
+            .send_stream_data(
+                &mut s.pipe.client,
+                initial_server_bidi_stream,
+                data_to_be_sent,
+            )
+            .ok();
+
+        s.advance().ok();
+
+        assert_eq!(
+            s.poll_server(),
+            Ok(ServerEvent::StreamData(initial_server_bidi_stream))
+        );
+
+        assert_eq!(
+            s.server.recv_stream_data(
+                &mut s.pipe.server,
+                initial_server_bidi_stream,
+                &mut buf
+            ),
+            Ok(31)
+        );
+
+        assert_eq!(data_to_be_sent, &buf[0..31]);
+
+        assert_eq!(s.poll_server(), Err(Error::Done));
+    }
+
+    #[test]
+    fn datagram() {
+        let mut s = complete_webtransport_handshake();
+
+        let data_to_be_sent = b"Hello, WebTransport from client";
+
+        s.client
+            .send_dgram(&mut s.pipe.client, data_to_be_sent)
+            .ok();
+
+        s.advance().ok();
+
+        assert_eq!(s.poll_server(), Ok(ServerEvent::Datagram));
+
+        let mut buf = vec![0; 1500];
+
+        assert_eq!(
+            s.server.recv_dgram(&mut s.pipe.server, &mut buf),
+            Ok((true, 1, 32))
+        );
+
+        assert_eq!(data_to_be_sent, &buf[1..32]);
+
+        assert_eq!(s.poll_server(), Err(Error::Done));
+
+        let data_to_be_sent = b"Hello, WebTransport from server";
+
+        s.server
+            .send_dgram(&mut s.pipe.server, data_to_be_sent)
+            .ok();
+
+        s.advance().ok();
+
+        assert_eq!(s.poll_client(), Ok(ClientEvent::Datagram));
+
+        assert_eq!(
+            s.client.recv_dgram(&mut s.pipe.client, &mut buf),
+            Ok((true, 1, 32))
+        );
+
+        assert_eq!(data_to_be_sent, &buf[1..32]);
+
+        assert_eq!(s.poll_client(), Err(Error::Done));
     }
 }

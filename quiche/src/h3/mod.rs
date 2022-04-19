@@ -4951,3 +4951,4 @@ mod frame;
 #[doc(hidden)]
 pub mod qpack;
 mod stream;
+pub mod webtransport;
