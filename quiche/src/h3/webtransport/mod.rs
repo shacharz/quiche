@@ -209,7 +209,7 @@
 //!
 //! loop {
 //!     match client_session.poll(&mut conn) {
-//!         Ok(quiche::h3::webtransport::ClientEvent::ServerReady) => {
+//!         Ok(quiche::h3::webtransport::ClientEvent::PeerReady) => {
 //!             // This event is issued when a SETTINGS frame from the server is received and
 //!             // it detects that WebTransport is enabled.
 //!             client_session.send_connect_request(&mut conn,
@@ -448,7 +448,7 @@ pub enum ServerEvent {
 pub enum ClientEvent {
     /// QUIC handshake is completed, and server's SETTINGS indicates server can accept
     /// WebTransport.
-    ServerReady,
+    PeerReady,
 
     /// response for CONNECT request was received with OK status.
     Connected,
@@ -1004,7 +1004,7 @@ impl ServerSession {
 #[derive(Clone, Debug, PartialEq)]
 enum ClientState {
     Init,
-    ServerReady,
+    PeerReady,
     Requesting(u64),
     Connected(u64),
 }
@@ -1061,7 +1061,7 @@ impl ClientSession {
         &mut self, conn: &mut Connection, authority: &[u8], path: &[u8],
         origin: &[u8], extra_headers: Option<&[Header]>,
     ) -> Result<u64> {
-        if self.state != ClientState::ServerReady {
+        if self.state != ClientState::PeerReady {
             return Err(Error::InvalidState);
         }
         let mut req = vec![
@@ -1094,8 +1094,8 @@ impl ClientSession {
         if self.state == ClientState::Init
             && self.h3_conn.webtransport_enabled_by_peer()
         {
-            self.state = ClientState::ServerReady;
-            return Ok(ClientEvent::ServerReady);
+            self.state = ClientState::PeerReady;
+            return Ok(ClientEvent::PeerReady);
         }
 
         match self.h3_conn.poll(conn) {
@@ -1511,7 +1511,7 @@ mod tests {
 
         // To make sure that server supports WebTransport,
         // wait server's SETTING frame including enable_webtransport flag.
-        assert_eq!(s.poll_client(), Ok(ClientEvent::ServerReady));
+        assert_eq!(s.poll_client(), Ok(ClientEvent::PeerReady));
         assert_eq!(s.poll_client(), Err(Error::Done));
 
         let _ = s
@@ -1560,7 +1560,7 @@ mod tests {
 
         // To make sure that server supports WebTransport,
         // wait server's SETTING frame including enable_webtransport flag.
-        assert_eq!(s.poll_client(), Ok(ClientEvent::ServerReady));
+        assert_eq!(s.poll_client(), Ok(ClientEvent::PeerReady));
         assert_eq!(s.poll_client(), Err(Error::Done));
 
         let _session_id = s
