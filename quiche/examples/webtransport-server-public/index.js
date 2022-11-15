@@ -6,7 +6,7 @@ const startedAt = performance.now();
  */
 async function startClientTests(args, hashes) {
     const url = 'https://' + args.hostname + ':' + args.port + '/echo'
-    console.log('startconnection')
+    console.log('startconnection123')
     const hashargs = {
         ...hashes,
         serverCertificateHashes: hashes.serverCertificateHashes
@@ -103,18 +103,20 @@ async function echoTestsConnection(transport) {
 }
 
 
-// edit the next lines for your test setting
-startClientTests(
-    { hostname: '127.0.0.1', port: 4430 },
-    {
-        serverCertificateHashes: [
-            // Webtransport Example Cert
-            {
-                algorithm: 'sha-256',
-                value:
-                    "13:C7:66:8F:EB:BA:94:0F:3E:97:2A:B2:3A:4E:CB:89:1D:B5:47:7E:94:FD:44:EA:00:DB:2E:05:81:D2:43:31",
 
-            },
-        ]
-    }
-)
+window.onFingerprintSubmit = () => {
+    let fingerprint = document.getElementById("fingerprint").value.trim();
+    console.log(`fingerprint: "${fingerprint}"`)
+
+    startClientTests(
+        { hostname: '127.0.0.1', port: 4430 },
+        {
+            serverCertificateHashes: [
+                {
+                    algorithm: 'sha-256',
+                    value: fingerprint,
+                },
+            ]
+        }
+    )
+}

@@ -33,6 +33,14 @@ use std::net;
 use std::collections::HashMap;
 use std::pin::Pin;
 
+use boring::asn1::Asn1Time;
+use boring::bn::BigNum;
+use boring::bn::MsbOption;
+use boring::ec::EcGroup;
+use boring::ec::EcKey;
+use boring::hash::MessageDigest;
+use boring::pkey::PKey;
+use boring::x509::extension::BasicConstraints;
 use env_logger::Env;
 use quiche::h3::webtransport::ServerSession;
 use ring::rand::*;
@@ -82,20 +90,73 @@ fn main() {
     )
     .unwrap();
 
-    let pem_serialized =
-        fs::read_to_string("examples/webtransport_example.crt").unwrap();
+    let cert_file = "examples/webtransport_example.crt";
+    let priv_file = "examples/webtransport_example.key";
+
+    // WebTransport certs are required to be rotated such that their expiration date does not exceed 10 days into the future.
+    //
+    // This is equivalent to:
+    // openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -x509 -sha256 -nodes -out webtransport_example.crt -keyout webtransport_example.key -days 10
+    let curve =
+        &EcGroup::from_curve_name(boring::nid::Nid::X9_62_PRIME256V1).unwrap();
+    let key_pair = EcKey::generate(curve).unwrap();
+    let key_pair = PKey::from_ec_key(key_pair).unwrap();
+
+    let mut builder = boring::x509::X509Builder::new().unwrap();
+    builder.set_version(0x2).unwrap();
+    let serial_number = {
+        let mut serial = BigNum::new().unwrap();
+        serial.rand(159, MsbOption::MAYBE_ZERO, false).unwrap();
+        serial.to_asn1_integer().unwrap()
+    };
+    builder.set_serial_number(&serial_number).unwrap();
+    builder
+        .set_not_before(&Asn1Time::days_from_now(0).unwrap())
+        .unwrap();
+    builder
+        .set_not_after(&Asn1Time::days_from_now(10).unwrap())
+        .unwrap();
+
+    // Build the x509 issuer and subject names. These are arbitrary.
+    let mut x509_name = boring::x509::X509NameBuilder::new().unwrap();
+    x509_name.append_entry_by_text("C", "US").unwrap();
+    x509_name.append_entry_by_text("ST", "CA").unwrap();
+    x509_name
+        .append_entry_by_text("O", "Some organization")
+        .unwrap();
+
+    let x509_name = x509_name.build();
+    builder.set_issuer_name(&x509_name).unwrap();
+    builder.set_subject_name(&x509_name).unwrap();
+
+    builder.set_pubkey(&key_pair).unwrap();
+
+    builder
+        .append_extension(
+            BasicConstraints::new().critical().ca().build().unwrap(),
+        )
+        .unwrap();
+
+    builder.sign(&key_pair, MessageDigest::sha256()).unwrap();
+
+    // Write the new cert and private key to disk
+    let cert_pem = builder.build().to_pem().unwrap();
+    fs::write(cert_file, cert_pem).unwrap();
+    let priv_pem = key_pair.private_key_to_pem_pkcs8().unwrap();
+    fs::write(priv_file, priv_pem).unwrap();
+
+    // Generate a SHA256 fingerprint from the cert
+    let pem_serialized = fs::read_to_string(cert_file).unwrap();
     let der_serialized = pem::parse(&pem_serialized).unwrap().contents;
     let hash = ring::digest::digest(&ring::digest::SHA256, &der_serialized);
+
+    info!("Generated fresh private key and certification (expires in no more then 10 days per WebTransport requirements)");
 
     // Create the configuration for the QUIC connections.
     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
 
-    config
-        .load_cert_chain_from_pem_file("examples/webtransport_example.crt")
-        .unwrap();
-    config
-        .load_priv_key_from_pem_file("examples/webtransport_example.key")
-        .unwrap();
+    config.load_cert_chain_from_pem_file(cert_file).unwrap();
+    config.load_priv_key_from_pem_file(priv_file).unwrap();
 
     config
         .set_application_protos(quiche::h3::APPLICATION_PROTOCOL)
@@ -122,8 +183,8 @@ fn main() {
 
     let mut clients = ClientMap::new();
     info!("Server started on {}", server_addr);
-    info!(
-        "Server {:?} Fingerprint: {}",
+    println!(
+        "Server {:?} Fingerprint:\n{}",
         hash.algorithm(),
         hash.as_ref()
             .into_iter()
