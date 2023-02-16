@@ -28,7 +28,7 @@
 //!
 //! This implementation is based on the following I-D:
 //!
-//! <https://datatracker.ietf.org/doc/html/draft-ietf-tcpm-hystartplusplus-03>
+//! <https://datatracker.ietf.org/doc/html/draft-ietf-tcpm-hystartplusplus-04>
 
 use std::cmp;
 use std::time::Duration;
@@ -38,8 +38,6 @@ use crate::packet;
 use crate::recovery;
 
 /// Constants from I-D.
-const LOW_CWND: usize = 16;
-
 const MIN_RTT_THRESH: Duration = Duration::from_millis(4);
 
 const MAX_RTT_THRESH: Duration = Duration::from_millis(16);
@@ -112,7 +110,7 @@ impl Hystart {
 
     pub fn in_css(&self, epoch: packet::Epoch) -> bool {
         self.enabled &&
-            epoch == packet::EPOCH_APPLICATION &&
+            epoch == packet::Epoch::Application &&
             self.css_start_time().is_some()
     }
 
@@ -131,9 +129,9 @@ impl Hystart {
     // On receiving ACK. Returns true if need to enter Congestion Avoidance.
     pub fn on_packet_acked(
         &mut self, epoch: packet::Epoch, packet: &recovery::Acked, rtt: Duration,
-        cwnd: usize, now: Instant, max_datagram_size: usize,
+        now: Instant,
     ) -> bool {
-        if !(self.enabled && epoch == packet::EPOCH_APPLICATION) {
+        if !(self.enabled && epoch == packet::Epoch::Application) {
             return false;
         }
 
@@ -143,11 +141,10 @@ impl Hystart {
 
         // Slow Start.
         if self.css_start_time().is_none() {
-            if cwnd >= (LOW_CWND * max_datagram_size) &&
-                self.rtt_sample_count >= N_RTT_SAMPLE
+            if self.rtt_sample_count >= N_RTT_SAMPLE &&
+                self.current_round_min_rtt != Duration::MAX &&
+                self.last_round_min_rtt != Duration::MAX
             {
-                self.rtt_sample_count = 0;
-
                 // clamp(min_rtt_thresh, last_round_min_rtt/8,
                 // max_rtt_thresh)
                 let rtt_thresh =

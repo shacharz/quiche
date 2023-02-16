@@ -3,7 +3,7 @@
 [![crates.io](https://img.shields.io/crates/v/quiche.svg)](https://crates.io/crates/quiche)
 [![docs.rs](https://docs.rs/quiche/badge.svg)](https://docs.rs/quiche)
 [![license](https://img.shields.io/github/license/cloudflare/quiche.svg)](https://opensource.org/licenses/BSD-2-Clause)
-![build](https://img.shields.io/github/workflow/status/cloudflare/quiche/Stable)
+![build](https://img.shields.io/github/actions/workflow/status/cloudflare/quiche/stable.yml?branch=master)
 
 [quiche] is an implementation of the QUIC transport protocol and HTTP/3 as
 specified by the [IETF]. It provides a low level API for processing QUIC packets
@@ -26,6 +26,10 @@ quiche powers Cloudflare edge network's [HTTP/3 support][cloudflare-http3]. The
 [cloudflare-quic.com](https://cloudflare-quic.com) website can be used for
 testing and experimentation.
 
+### Android
+
+Android's DNS resolver uses quiche to [implement DNS over HTTP/3][android-http3].
+
 ### curl
 
 quiche can be [integrated into curl][curl-http3] to provide support for HTTP/3.
@@ -36,6 +40,7 @@ quiche can be [integrated into NGINX](nginx/) using an unofficial patch to
 provide support for HTTP/3.
 
 [cloudflare-http3]: https://blog.cloudflare.com/http3-the-past-present-and-future/
+[android-http3]: https://security.googleblog.com/2022/07/dns-over-http3-in-android.html
 [curl-http3]: https://github.com/curl/curl/blob/master/docs/HTTP3.md#quiche-version
 
 Getting Started
@@ -81,10 +86,10 @@ a new connection, while [`accept()`] is for servers:
 
 ```rust
 // Client connection.
-let conn = quiche::connect(Some(&server_name), &scid, &mut config)?;
+let conn = quiche::connect(Some(&server_name), &scid, local, peer, &mut config)?;
 
 // Server connection.
-let conn = quiche::accept(&scid, None, &mut config)?;
+let conn = quiche::accept(&scid, None, local, peer, &mut config)?;
 ```
 
 ### Handling incoming packets
@@ -93,10 +98,12 @@ Using the connection's [`recv()`] method the application can process
 incoming packets that belong to that connection from the network:
 
 ```rust
+let to = socket.local_addr().unwrap();
+
 loop {
     let (read, from) = socket.recv_from(&mut buf).unwrap();
 
-    let recv_info = quiche::RecvInfo { from };
+    let recv_info = quiche::RecvInfo { from, to };
 
     let read = match conn.recv(&mut buf[..read], recv_info) {
         Ok(v) => v,
@@ -170,6 +177,25 @@ loop {
     socket.send_to(&out[..write], &send_info.to).unwrap();
 }
 ```
+
+#### Pacing
+
+It is recommended that applications [pace] sending of outgoing packets to
+avoid creating packet bursts that could cause short-term congestion and
+losses in the network.
+
+quiche exposes pacing hints for outgoing packets through the [`at`] field
+of the [`SendInfo`] structure that is returned by the [`send()`] method.
+This field represents the time when a specific packet should be sent into
+the network.
+
+Applications can use these hints by artificially delaying the sending of
+packets through platform-specific mechanisms (such as the [`SO_TXTIME`]
+socket option on Linux), or custom methods (for example by using user-space
+timers).
+
+[pace]: https://datatracker.ietf.org/doc/html/rfc9002#section-7.7
+[`SO_TXTIME`]: https://man7.org/linux/man-pages/man8/tc-etf.8.html
 
 ### Sending and receiving stream data
 
@@ -246,7 +272,7 @@ is disabled by default), by passing ``--features ffi`` to ``cargo``.
 Building
 --------
 
-quiche requires Rust 1.53 or later to build. The latest stable Rust release can
+quiche requires Rust 1.66 or later to build. The latest stable Rust release can
 be installed using [rustup](https://rustup.rs/).
 
 Once the Rust build environment is setup, the quiche source code can be fetched

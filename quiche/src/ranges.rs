@@ -30,7 +30,7 @@ use std::collections::btree_map;
 use std::collections::BTreeMap;
 use std::collections::Bound;
 
-#[derive(Clone, PartialEq, PartialOrd)]
+#[derive(Clone, PartialEq, Eq, PartialOrd)]
 pub struct RangeSet {
     inner: BTreeMap<u64, u64>,
 
@@ -190,7 +190,7 @@ impl std::fmt::Debug for RangeSet {
             })
             .collect();
 
-        write!(f, "{:?}", ranges)
+        write!(f, "{ranges:?}")
     }
 }
 

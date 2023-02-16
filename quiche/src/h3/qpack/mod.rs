@@ -40,7 +40,7 @@ const LITERAL_WITH_NAME_REF: u8 = 0b0100_0000;
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// A QPACK error.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The provided buffer is too short.
     BufferTooShort,
@@ -60,7 +60,7 @@ pub enum Error {
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
@@ -70,8 +70,8 @@ impl std::error::Error for Error {
     }
 }
 
-impl std::convert::From<crate::octets::BufferTooShortError> for Error {
-    fn from(_err: crate::octets::BufferTooShortError) -> Self {
+impl std::convert::From<octets::BufferTooShortError> for Error {
+    fn from(_err: octets::BufferTooShortError) -> Self {
         Error::BufferTooShort
     }
 }

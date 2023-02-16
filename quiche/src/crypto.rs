@@ -38,7 +38,7 @@ use crate::Result;
 use crate::packet;
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Level {
     Initial   = 0,
     ZeroRTT   = 1,
@@ -49,18 +49,16 @@ pub enum Level {
 impl Level {
     pub fn from_epoch(e: packet::Epoch) -> Level {
         match e {
-            packet::EPOCH_INITIAL => Level::Initial,
+            packet::Epoch::Initial => Level::Initial,
 
-            packet::EPOCH_HANDSHAKE => Level::Handshake,
+            packet::Epoch::Handshake => Level::Handshake,
 
-            packet::EPOCH_APPLICATION => Level::OneRTT,
-
-            _ => unreachable!(),
+            packet::Epoch::Application => Level::OneRTT,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Algorithm {
     #[allow(non_camel_case_types)]
     AES128_GCM,

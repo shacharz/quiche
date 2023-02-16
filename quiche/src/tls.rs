@@ -43,11 +43,11 @@ use crate::Connection;
 use crate::ConnectionError;
 
 use crate::crypto;
-use crate::octets;
 use crate::packet;
 
 const TLS1_3_VERSION: u16 = 0x0304;
 const TLS_ALERT_ERROR: u64 = 0x100;
+const INTERNAL_ERROR: u64 = 0x01;
 
 #[allow(non_camel_case_types)]
 #[repr(transparent)]
@@ -124,7 +124,8 @@ struct SSL_QUIC_METHOD {
 }
 
 lazy_static::lazy_static! {
-    static ref QUICHE_EX_DATA_INDEX: c_int = unsafe {
+    /// BoringSSL Extra Data Index for Quiche Connections
+    pub static ref QUICHE_EX_DATA_INDEX: c_int = unsafe {
         SSL_get_ex_new_index(0, ptr::null(), ptr::null(), ptr::null(), ptr::null())
     };
 }
@@ -154,10 +155,20 @@ impl Context {
         }
     }
 
+    #[cfg(feature = "boringssl-boring-crate")]
+    pub fn from_boring(ssl_ctx: boring::ssl::SslContext) -> Context {
+        use foreign_types_shared::ForeignType;
+
+        let mut ctx = Context(ssl_ctx.into_ptr() as _);
+        ctx.set_session_callback();
+
+        ctx
+    }
+
     pub fn new_handshake(&mut self) -> Result<Handshake> {
         unsafe {
             let ssl = SSL_new(self.as_mut_ptr());
-            Ok(Handshake(ssl))
+            Ok(Handshake::new(ssl))
         }
     }
 
@@ -267,11 +278,9 @@ impl Context {
     }
 
     pub fn set_verify(&mut self, verify: bool) {
-        let mode = if verify {
-            0x01 // SSL_VERIFY_PEER
-        } else {
-            0x00 // SSL_VERIFY_NONE
-        };
+        // true  -> 0x01 SSL_VERIFY_PEER
+        // false -> 0x00 SSL_VERIFY_NONE
+        let mode = i32::from(verify);
 
         unsafe {
             SSL_CTX_set_verify(self.as_mut_ptr(), mode, ptr::null());
@@ -284,12 +293,12 @@ impl Context {
         }
     }
 
-    pub fn set_alpn(&mut self, v: &[Vec<u8>]) -> Result<()> {
+    pub fn set_alpn(&mut self, v: &[&[u8]]) -> Result<()> {
         let mut protos: Vec<u8> = Vec::new();
 
         for proto in v {
             protos.push(proto.len() as u8);
-            protos.append(&mut proto.clone());
+            protos.extend_from_slice(proto);
         }
 
         // Configure ALPN for servers.
@@ -322,7 +331,7 @@ impl Context {
     }
 
     pub fn set_early_data_enabled(&mut self, enabled: bool) {
-        let enabled = if enabled { 1 } else { 0 };
+        let enabled = i32::from(enabled);
 
         unsafe {
             SSL_CTX_set_early_data_enabled(self.as_mut_ptr(), enabled);
@@ -348,25 +357,33 @@ impl Drop for Context {
     }
 }
 
-pub struct Handshake(*mut SSL);
+pub struct Handshake {
+    /// Raw pointer
+    ptr: *mut SSL,
+    /// SSL_process_quic_post_handshake should be called when whenever
+    /// SSL_provide_quic_data is called to process the provided data.
+    provided_data_outstanding: bool,
+}
 
 impl Handshake {
     #[cfg(feature = "ffi")]
     pub unsafe fn from_ptr(ssl: *mut c_void) -> Handshake {
-        let ssl = ssl as *mut SSL;
-        Handshake(ssl)
+        Handshake::new(ssl as *mut SSL)
+    }
+
+    fn new(ptr: *mut SSL) -> Handshake {
+        Handshake {
+            ptr,
+            provided_data_outstanding: false,
+        }
     }
 
     pub fn get_error(&self, ret_code: c_int) -> c_int {
         unsafe { SSL_get_error(self.as_ptr(), ret_code) }
     }
 
-    pub fn init(
-        &mut self, conn: *const Connection, is_server: bool,
-    ) -> Result<()> {
+    pub fn init(&mut self, is_server: bool) -> Result<()> {
         self.set_state(is_server);
-
-        self.set_ex_data(*QUICHE_EX_DATA_INDEX, conn)?;
 
         self.set_min_proto_version(TLS1_3_VERSION);
         self.set_max_proto_version(TLS1_3_VERSION);
@@ -433,16 +450,14 @@ impl Handshake {
     }
 
     pub fn set_quiet_shutdown(&mut self, mode: bool) {
-        unsafe {
-            SSL_set_quiet_shutdown(self.as_mut_ptr(), if mode { 1 } else { 0 })
-        }
+        unsafe { SSL_set_quiet_shutdown(self.as_mut_ptr(), i32::from(mode)) }
     }
 
     pub fn set_host_name(&mut self, name: &str) -> Result<()> {
         let cstr = ffi::CString::new(name).map_err(|_| Error::TlsFail)?;
         let rc =
             unsafe { SSL_set_tlsext_host_name(self.as_mut_ptr(), cstr.as_ptr()) };
-        map_result_ssl(self, rc)?;
+        self.map_result_ssl(rc)?;
 
         let param = unsafe { SSL_get0_param(self.as_mut_ptr()) };
 
@@ -459,7 +474,7 @@ impl Handshake {
                 buf.len(),
             )
         };
-        map_result_ssl(self, rc)
+        self.map_result_ssl(rc)
     }
 
     #[cfg(test)]
@@ -506,6 +521,10 @@ impl Handshake {
                 0, // TLSEXT_NAMETYPE_host_name
             );
 
+            if ptr.is_null() {
+                return None;
+            }
+
             ffi::CStr::from_ptr(ptr)
         };
 
@@ -537,6 +556,7 @@ impl Handshake {
     pub fn provide_data(
         &mut self, level: crypto::Level, buf: &[u8],
     ) -> Result<()> {
+        self.provided_data_outstanding = true;
         let rc = unsafe {
             SSL_provide_quic_data(
                 self.as_mut_ptr(),
@@ -545,17 +565,32 @@ impl Handshake {
                 buf.len(),
             )
         };
-        map_result_ssl(self, rc)
+        self.map_result_ssl(rc)
     }
 
-    pub fn do_handshake(&mut self) -> Result<()> {
+    pub fn do_handshake(&mut self, ex_data: &mut ExData) -> Result<()> {
+        self.set_ex_data(*QUICHE_EX_DATA_INDEX, ex_data)?;
         let rc = unsafe { SSL_do_handshake(self.as_mut_ptr()) };
-        map_result_ssl(self, rc)
+        self.set_ex_data::<Connection>(*QUICHE_EX_DATA_INDEX, std::ptr::null())?;
+
+        self.set_transport_error(ex_data, rc);
+        self.map_result_ssl(rc)
     }
 
-    pub fn process_post_handshake(&mut self) -> Result<()> {
+    pub fn process_post_handshake(&mut self, ex_data: &mut ExData) -> Result<()> {
+        // If SSL_provide_quic_data hasn't been called since we last called
+        // SSL_process_quic_post_handshake, then there's nothing to do.
+        if !self.provided_data_outstanding {
+            return Ok(());
+        }
+        self.provided_data_outstanding = false;
+
+        self.set_ex_data(*QUICHE_EX_DATA_INDEX, ex_data)?;
         let rc = unsafe { SSL_process_quic_post_handshake(self.as_mut_ptr()) };
-        map_result_ssl(self, rc)
+        self.set_ex_data::<Connection>(*QUICHE_EX_DATA_INDEX, std::ptr::null())?;
+
+        self.set_transport_error(ex_data, rc);
+        self.map_result_ssl(rc)
     }
 
     pub fn reset_early_data_reject(&mut self) {
@@ -609,6 +644,39 @@ impl Handshake {
         Some(sigalg.to_string())
     }
 
+    pub fn peer_cert_chain(&self) -> Option<Vec<&[u8]>> {
+        let cert_chain = unsafe {
+            let chain =
+                map_result_ptr(SSL_get0_peer_certificates(self.as_ptr())).ok()?;
+
+            let num = sk_num(chain);
+            if num <= 0 {
+                return None;
+            }
+
+            let mut cert_chain = vec![];
+            for i in 0..num {
+                let buffer =
+                    map_result_ptr(sk_value(chain, i) as *const CRYPTO_BUFFER)
+                        .ok()?;
+
+                let out_len = CRYPTO_BUFFER_len(buffer);
+                if out_len == 0 {
+                    return None;
+                }
+
+                let out = CRYPTO_BUFFER_data(buffer);
+                let slice = slice::from_raw_parts(out, out_len);
+
+                cert_chain.push(slice);
+            }
+
+            cert_chain
+        };
+
+        Some(cert_chain)
+    }
+
     pub fn peer_cert(&self) -> Option<&[u8]> {
         let peer_cert = unsafe {
             let chain =
@@ -627,7 +695,7 @@ impl Handshake {
             }
 
             let out = CRYPTO_BUFFER_data(buffer);
-            slice::from_raw_parts(out, out_len as usize)
+            slice::from_raw_parts(out, out_len)
         };
 
         Some(peer_cert)
@@ -647,15 +715,84 @@ impl Handshake {
 
     pub fn clear(&mut self) -> Result<()> {
         let rc = unsafe { SSL_clear(self.as_mut_ptr()) };
-        map_result_ssl(self, rc)
+        self.map_result_ssl(rc)
     }
 
     fn as_ptr(&self) -> *const SSL {
-        self.0
+        self.ptr
     }
 
     fn as_mut_ptr(&mut self) -> *mut SSL {
-        self.0
+        self.ptr
+    }
+
+    fn map_result_ssl(&mut self, bssl_result: c_int) -> Result<()> {
+        match bssl_result {
+            1 => Ok(()),
+
+            _ => {
+                let ssl_err = self.get_error(bssl_result);
+                match ssl_err {
+                    // SSL_ERROR_SSL
+                    1 => {
+                        log_ssl_error();
+
+                        Err(Error::TlsFail)
+                    },
+
+                    // SSL_ERROR_WANT_READ
+                    2 => Err(Error::Done),
+
+                    // SSL_ERROR_WANT_WRITE
+                    3 => Err(Error::Done),
+
+                    // SSL_ERROR_WANT_X509_LOOKUP
+                    4 => Err(Error::Done),
+
+                    // SSL_ERROR_SYSCALL
+                    5 => Err(Error::TlsFail),
+
+                    // SSL_ERROR_PENDING_SESSION
+                    11 => Err(Error::Done),
+
+                    // SSL_ERROR_PENDING_CERTIFICATE
+                    12 => Err(Error::Done),
+
+                    // SSL_ERROR_WANT_PRIVATE_KEY_OPERATION
+                    13 => Err(Error::Done),
+
+                    // SSL_ERROR_PENDING_TICKET
+                    14 => Err(Error::Done),
+
+                    // SSL_ERROR_EARLY_DATA_REJECTED
+                    15 => {
+                        self.reset_early_data_reject();
+                        Err(Error::Done)
+                    },
+
+                    // SSL_ERROR_WANT_CERTIFICATE_VERIFY
+                    16 => Err(Error::Done),
+
+                    _ => Err(Error::TlsFail),
+                }
+            },
+        }
+    }
+
+    fn set_transport_error(&mut self, ex_data: &mut ExData, bssl_result: c_int) {
+        // SSL_ERROR_SSL
+        if self.get_error(bssl_result) == 1 {
+            // SSL_ERROR_SSL can't be recovered so ensure we set a
+            // local_error so the connection is closed.
+            // See https://www.openssl.org/docs/man1.1.1/man3/SSL_get_error.html
+            if ex_data.local_error.is_none() {
+                *ex_data.local_error = Some(ConnectionError {
+                    is_app: false,
+                    error_code: INTERNAL_ERROR,
+                    reason: Vec::new(),
+                })
+            }
+        }
     }
 }
 
@@ -671,6 +808,22 @@ impl Drop for Handshake {
     fn drop(&mut self) {
         unsafe { SSL_free(self.as_mut_ptr()) }
     }
+}
+
+pub struct ExData<'a> {
+    pub application_protos: &'a Vec<Vec<u8>>,
+
+    pub pkt_num_spaces: &'a mut [packet::PktNumSpace; packet::Epoch::count()],
+
+    pub session: &'a mut Option<Vec<u8>>,
+
+    pub local_error: &'a mut Option<super::ConnectionError>,
+
+    pub keylog: Option<&'a mut Box<dyn std::io::Write + Send + Sync>>,
+
+    pub trace_id: &'a str,
+
+    pub is_server: bool,
 }
 
 fn get_ex_data_from_ptr<'a, T>(ptr: *mut SSL, idx: c_int) -> Option<&'a mut T> {
@@ -697,23 +850,24 @@ extern fn set_read_secret(
     ssl: *mut SSL, level: crypto::Level, cipher: *const SSL_CIPHER,
     secret: *const u8, secret_len: usize,
 ) -> c_int {
-    let conn =
-        match get_ex_data_from_ptr::<Connection>(ssl, *QUICHE_EX_DATA_INDEX) {
-            Some(v) => v,
+    let ex_data = match get_ex_data_from_ptr::<ExData>(ssl, *QUICHE_EX_DATA_INDEX)
+    {
+        Some(v) => v,
 
-            None => return 0,
-        };
+        None => return 0,
+    };
 
-    trace!("{} set read secret lvl={:?}", conn.trace_id, level);
+    trace!("{} set read secret lvl={:?}", ex_data.trace_id, level);
 
     let space = match level {
-        crypto::Level::Initial => &mut conn.pkt_num_spaces[packet::EPOCH_INITIAL],
+        crypto::Level::Initial =>
+            &mut ex_data.pkt_num_spaces[packet::Epoch::Initial],
         crypto::Level::ZeroRTT =>
-            &mut conn.pkt_num_spaces[packet::EPOCH_APPLICATION],
+            &mut ex_data.pkt_num_spaces[packet::Epoch::Application],
         crypto::Level::Handshake =>
-            &mut conn.pkt_num_spaces[packet::EPOCH_HANDSHAKE],
+            &mut ex_data.pkt_num_spaces[packet::Epoch::Handshake],
         crypto::Level::OneRTT =>
-            &mut conn.pkt_num_spaces[packet::EPOCH_APPLICATION],
+            &mut ex_data.pkt_num_spaces[packet::Epoch::Application],
     };
 
     let aead = match get_cipher_from_ptr(cipher) {
@@ -723,7 +877,7 @@ extern fn set_read_secret(
     };
 
     // 0-RTT read secrets are present only on the server.
-    if level != crypto::Level::ZeroRTT || conn.is_server {
+    if level != crypto::Level::ZeroRTT || ex_data.is_server {
         let secret = unsafe { slice::from_raw_parts(secret, secret_len) };
 
         let open = match crypto::Open::from_secret(aead, secret) {
@@ -747,23 +901,24 @@ extern fn set_write_secret(
     ssl: *mut SSL, level: crypto::Level, cipher: *const SSL_CIPHER,
     secret: *const u8, secret_len: usize,
 ) -> c_int {
-    let conn =
-        match get_ex_data_from_ptr::<Connection>(ssl, *QUICHE_EX_DATA_INDEX) {
-            Some(v) => v,
+    let ex_data = match get_ex_data_from_ptr::<ExData>(ssl, *QUICHE_EX_DATA_INDEX)
+    {
+        Some(v) => v,
 
-            None => return 0,
-        };
+        None => return 0,
+    };
 
-    trace!("{} set write secret lvl={:?}", conn.trace_id, level);
+    trace!("{} set write secret lvl={:?}", ex_data.trace_id, level);
 
     let space = match level {
-        crypto::Level::Initial => &mut conn.pkt_num_spaces[packet::EPOCH_INITIAL],
+        crypto::Level::Initial =>
+            &mut ex_data.pkt_num_spaces[packet::Epoch::Initial],
         crypto::Level::ZeroRTT =>
-            &mut conn.pkt_num_spaces[packet::EPOCH_APPLICATION],
+            &mut ex_data.pkt_num_spaces[packet::Epoch::Application],
         crypto::Level::Handshake =>
-            &mut conn.pkt_num_spaces[packet::EPOCH_HANDSHAKE],
+            &mut ex_data.pkt_num_spaces[packet::Epoch::Handshake],
         crypto::Level::OneRTT =>
-            &mut conn.pkt_num_spaces[packet::EPOCH_APPLICATION],
+            &mut ex_data.pkt_num_spaces[packet::Epoch::Application],
     };
 
     let aead = match get_cipher_from_ptr(cipher) {
@@ -773,7 +928,7 @@ extern fn set_write_secret(
     };
 
     // 0-RTT write secrets are present only on the client.
-    if level != crypto::Level::ZeroRTT || !conn.is_server {
+    if level != crypto::Level::ZeroRTT || !ex_data.is_server {
         let secret = unsafe { slice::from_raw_parts(secret, secret_len) };
 
         let seal = match crypto::Seal::from_secret(aead, secret) {
@@ -791,16 +946,16 @@ extern fn set_write_secret(
 extern fn add_handshake_data(
     ssl: *mut SSL, level: crypto::Level, data: *const u8, len: usize,
 ) -> c_int {
-    let conn =
-        match get_ex_data_from_ptr::<Connection>(ssl, *QUICHE_EX_DATA_INDEX) {
-            Some(v) => v,
+    let ex_data = match get_ex_data_from_ptr::<ExData>(ssl, *QUICHE_EX_DATA_INDEX)
+    {
+        Some(v) => v,
 
-            None => return 0,
-        };
+        None => return 0,
+    };
 
     trace!(
         "{} write message lvl={:?} len={}",
-        conn.trace_id,
+        ex_data.trace_id,
         level,
         len
     );
@@ -808,12 +963,13 @@ extern fn add_handshake_data(
     let buf = unsafe { slice::from_raw_parts(data, len) };
 
     let space = match level {
-        crypto::Level::Initial => &mut conn.pkt_num_spaces[packet::EPOCH_INITIAL],
+        crypto::Level::Initial =>
+            &mut ex_data.pkt_num_spaces[packet::Epoch::Initial],
         crypto::Level::ZeroRTT => unreachable!(),
         crypto::Level::Handshake =>
-            &mut conn.pkt_num_spaces[packet::EPOCH_HANDSHAKE],
+            &mut ex_data.pkt_num_spaces[packet::Epoch::Handshake],
         crypto::Level::OneRTT =>
-            &mut conn.pkt_num_spaces[packet::EPOCH_APPLICATION],
+            &mut ex_data.pkt_num_spaces[packet::Epoch::Application],
     };
 
     if space.crypto_stream.send.write(buf, false).is_err() {
@@ -831,22 +987,22 @@ extern fn flush_flight(_ssl: *mut SSL) -> c_int {
 }
 
 extern fn send_alert(ssl: *mut SSL, level: crypto::Level, alert: u8) -> c_int {
-    let conn =
-        match get_ex_data_from_ptr::<Connection>(ssl, *QUICHE_EX_DATA_INDEX) {
-            Some(v) => v,
+    let ex_data = match get_ex_data_from_ptr::<ExData>(ssl, *QUICHE_EX_DATA_INDEX)
+    {
+        Some(v) => v,
 
-            None => return 0,
-        };
+        None => return 0,
+    };
 
     trace!(
         "{} send alert lvl={:?} alert={:x}",
-        conn.trace_id,
+        ex_data.trace_id,
         level,
         alert
     );
 
     let error: u64 = TLS_ALERT_ERROR + u64::from(alert);
-    conn.local_error = Some(ConnectionError {
+    *ex_data.local_error = Some(ConnectionError {
         is_app: false,
         error_code: error,
         reason: Vec::new(),
@@ -856,14 +1012,14 @@ extern fn send_alert(ssl: *mut SSL, level: crypto::Level, alert: u8) -> c_int {
 }
 
 extern fn keylog(ssl: *mut SSL, line: *const c_char) {
-    let conn =
-        match get_ex_data_from_ptr::<Connection>(ssl, *QUICHE_EX_DATA_INDEX) {
-            Some(v) => v,
+    let ex_data = match get_ex_data_from_ptr::<ExData>(ssl, *QUICHE_EX_DATA_INDEX)
+    {
+        Some(v) => v,
 
-            None => return,
-        };
+        None => return,
+    };
 
-    if let Some(keylog) = &mut conn.keylog {
+    if let Some(keylog) = &mut ex_data.keylog {
         let data = unsafe { ffi::CStr::from_ptr(line).to_bytes() };
 
         let mut full_line = Vec::with_capacity(data.len() + 1);
@@ -878,14 +1034,14 @@ extern fn select_alpn(
     ssl: *mut SSL, out: *mut *const u8, out_len: *mut u8, inp: *mut u8,
     in_len: c_uint, _arg: *mut c_void,
 ) -> c_int {
-    let conn =
-        match get_ex_data_from_ptr::<Connection>(ssl, *QUICHE_EX_DATA_INDEX) {
-            Some(v) => v,
+    let ex_data = match get_ex_data_from_ptr::<ExData>(ssl, *QUICHE_EX_DATA_INDEX)
+    {
+        Some(v) => v,
 
-            None => return 3, // SSL_TLSEXT_ERR_NOACK
-        };
+        None => return 3, // SSL_TLSEXT_ERR_NOACK
+    };
 
-    if conn.application_protos.is_empty() {
+    if ex_data.application_protos.is_empty() {
         return 3; // SSL_TLSEXT_ERR_NOACK
     }
 
@@ -894,7 +1050,7 @@ extern fn select_alpn(
     });
 
     while let Ok(proto) = protos.get_bytes_with_u8_length() {
-        let found = conn.application_protos.iter().any(|expected| {
+        let found = ex_data.application_protos.iter().any(|expected| {
             trace!(
                 "checking peer ALPN {:?} against {:?}",
                 std::str::from_utf8(proto.as_ref()),
@@ -923,16 +1079,15 @@ extern fn select_alpn(
     3 // SSL_TLSEXT_ERR_NOACK
 }
 
-#[no_mangle]
 extern fn new_session(ssl: *mut SSL, session: *mut SSL_SESSION) -> c_int {
-    let conn =
-        match get_ex_data_from_ptr::<Connection>(ssl, *QUICHE_EX_DATA_INDEX) {
-            Some(v) => v,
+    let ex_data = match get_ex_data_from_ptr::<ExData>(ssl, *QUICHE_EX_DATA_INDEX)
+    {
+        Some(v) => v,
 
-            None => return 0,
-        };
+        None => return 0,
+    };
 
-    let handshake = Handshake(ssl);
+    let handshake = Handshake::new(ssl);
     let peer_params = handshake.quic_transport_params();
 
     // Serialize session object into buffer.
@@ -977,7 +1132,7 @@ extern fn new_session(ssl: *mut SSL, session: *mut SSL_SESSION) -> c_int {
         return 0;
     }
 
-    conn.session = Some(buffer);
+    *ex_data.session = Some(buffer);
 
     // Prevent handshake from being freed, as we still need it.
     std::mem::forget(handshake);
@@ -1003,59 +1158,6 @@ fn map_result_ptr<'a, T>(bssl_result: *const T) -> Result<&'a T> {
     match unsafe { bssl_result.as_ref() } {
         Some(v) => Ok(v),
         None => Err(Error::TlsFail),
-    }
-}
-
-fn map_result_ssl(ssl: &mut Handshake, bssl_result: c_int) -> Result<()> {
-    match bssl_result {
-        1 => Ok(()),
-
-        _ => {
-            let ssl_err = ssl.get_error(bssl_result);
-            match ssl_err {
-                // SSL_ERROR_SSL
-                1 => {
-                    log_ssl_error();
-
-                    Err(Error::TlsFail)
-                },
-
-                // SSL_ERROR_WANT_READ
-                2 => Err(Error::Done),
-
-                // SSL_ERROR_WANT_WRITE
-                3 => Err(Error::Done),
-
-                // SSL_ERROR_WANT_X509_LOOKUP
-                4 => Err(Error::Done),
-
-                // SSL_ERROR_SYSCALL
-                5 => Err(Error::TlsFail),
-
-                // SSL_ERROR_PENDING_SESSION
-                11 => Err(Error::Done),
-
-                // SSL_ERROR_PENDING_CERTIFICATE
-                12 => Err(Error::Done),
-
-                // SSL_ERROR_WANT_PRIVATE_KEY_OPERATION
-                13 => Err(Error::Done),
-
-                // SSL_ERROR_PENDING_TICKET
-                14 => Err(Error::Done),
-
-                // SSL_ERROR_EARLY_DATA_REJECTED
-                15 => {
-                    ssl.reset_early_data_reject();
-                    Err(Error::Done)
-                },
-
-                // SSL_ERROR_WANT_CERTIFICATE_VERIFY
-                16 => Err(Error::Done),
-
-                _ => Err(Error::TlsFail),
-            }
-        },
     }
 }
 
