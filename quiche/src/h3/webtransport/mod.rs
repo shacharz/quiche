@@ -113,13 +113,13 @@
 //!                 if (stream_id & 0x2) == 0 {
 //!                     // bidirectional stream
 //!                     // you can send data through this stream.
-//!                     server_session.send_stream_data(&mut conn, stream_id, stream_data);
+//!                     server_session.send_stream_data(&mut conn, stream_id, stream_data, false);
 //!                 } else {
 //!                     // you cannot send data through client-initiated-unidirectional-stream.
 //!                     // so, open new server-initiated-unidirectional-stream, and send data
 //!                     // through it.
 //!                     let new_stream_id = server_session.open_stream(&mut conn, false).unwrap();
-//!                     server_session.send_stream_data(&mut conn, new_stream_id, stream_data);
+//!                     server_session.send_stream_data(&mut conn, new_stream_id, stream_data, false);
 //!                 }
 //!             }
 //!         },
@@ -960,7 +960,7 @@ impl ServerSession {
     ///
     /// If successful, a number is returned representing the amount of data that could be sent.
     pub fn send_stream_data(
-        &mut self, conn: &mut Connection, stream_id: u64, data: &[u8],
+        &mut self, conn: &mut Connection, stream_id: u64, data: &[u8], fin: bool
     ) -> Result<usize> {
         match self.state {
             ServerState::Connected(_session_id) => {
@@ -970,7 +970,7 @@ impl ServerSession {
                             Err(Error::InvalidStream)
                         } else {
                             let written =
-                                conn.stream_send(stream_id, data, false)?;
+                                conn.stream_send(stream_id, data, fin == true)?;
                             Ok(written)
                         }
                     },
@@ -1643,7 +1643,8 @@ mod tests {
             s.server.send_stream_data(
                 &mut s.pipe.server,
                 initial_client_uni_stream,
-                data_to_be_sent
+                data_to_be_sent,
+                false
             ),
             Err(Error::InvalidStream)
         );
@@ -1660,6 +1661,7 @@ mod tests {
                 &mut s.pipe.server,
                 initial_server_uni_stream,
                 data_to_be_sent,
+                false
             )
             .ok();
 
@@ -1744,6 +1746,7 @@ mod tests {
                 &mut s.pipe.server,
                 initial_client_bidi_stream,
                 data_to_be_sent,
+                false
             )
             .ok();
 
@@ -1787,6 +1790,7 @@ mod tests {
                 &mut s.pipe.server,
                 initial_server_bidi_stream,
                 data_to_be_sent,
+                false
             )
             .ok();
 
