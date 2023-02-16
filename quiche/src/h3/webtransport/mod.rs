@@ -774,6 +774,10 @@ impl ServerSession {
                 Ok(ServerEvent::Other(stream_id, h3::Event::Data))
             },
 
+            Ok((stream_id, h3::Event::PriorityUpdate)) => {
+                Ok(ServerEvent::Other(stream_id, h3::Event::PriorityUpdate))
+            },
+
             Ok((stream_id, h3::Event::Finished)) => {
                 if self.streams.contains_key(&stream_id) {
                     Ok(ServerEvent::StreamFinished(stream_id))
@@ -1164,6 +1168,10 @@ impl ClientSession {
                 Ok(ClientEvent::Other(stream_id, h3::Event::Data))
             },
 
+            Ok((stream_id, h3::Event::PriorityUpdate)) => {
+                Ok(ClientEvent::Other(stream_id, h3::Event::PriorityUpdate))
+            },
+
             Ok((stream_id, h3::Event::Finished)) => {
                 if self.streams.contains_key(&stream_id) {
                     Ok(ClientEvent::StreamFinished(stream_id))
@@ -1392,7 +1400,7 @@ pub mod testing {
             let mut config = crate::Config::new(crate::PROTOCOL_VERSION)?;
             config.load_cert_chain_from_pem_file("examples/cert.crt")?;
             config.load_priv_key_from_pem_file("examples/cert.key")?;
-            config.set_application_protos(b"\x02h3")?;
+            config.set_application_protos(&[b"\x02h3"])?;
             config.set_initial_max_data(1500);
             config.set_initial_max_stream_data_bidi_local(150);
             config.set_initial_max_stream_data_bidi_remote(150);
